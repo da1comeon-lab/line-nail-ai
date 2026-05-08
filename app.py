@@ -4,7 +4,9 @@ from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from openai import OpenAI
-import os, uuid, base64
+import os
+import uuid
+import base64
 
 app = Flask(__name__)
 
@@ -66,43 +68,43 @@ def crop_square_nail_focus(img):
     size = min(w, h)
 
     left = (w - size) // 2
-    top = int((h - size) * 0.28)
+    top = int((h - size) * 0.25)
     top = max(0, min(top, h - size))
 
     return img.crop((left, top, left + size, top + size))
 
-def natural_nail_retouch(filepath):
+def nail_salon_retouch(filepath):
     img = Image.open(filepath).convert("RGB")
     img = ImageOps.exif_transpose(img)
 
-    # 額縁なし：元画像をそのまま正方形トリミング
+    # 額縁なしで正方形化
     img = crop_square_nail_focus(img)
     img = img.resize((1080, 1080), Image.LANCZOS)
 
-    # 全体を少し明るく
-    img = ImageEnhance.Brightness(img).enhance(1.10)
-    img = ImageEnhance.Contrast(img).enhance(1.04)
+    # 全体を明るく
+    img = ImageEnhance.Brightness(img).enhance(1.13)
+    img = ImageEnhance.Contrast(img).enhance(1.05)
 
-    # 赤み・黄ばみを軽く抑えて、清潔感寄せ
+    # 赤み・黄ばみを軽減
     r, g, b = img.split()
-    r = r.point(lambda i: min(255, int(i * 0.975)))
-    g = g.point(lambda i: min(255, int(i * 1.005)))
-    b = b.point(lambda i: min(255, int(i * 1.018)))
+    r = r.point(lambda i: min(255, int(i * 0.970)))
+    g = g.point(lambda i: min(255, int(i * 1.006)))
+    b = b.point(lambda i: min(255, int(i * 1.022)))
     img = Image.merge("RGB", (r, g, b))
 
-    # 彩度を少しだけ控える
-    img = ImageEnhance.Color(img).enhance(0.96)
+    # 高級感寄せで彩度を少し抑える
+    img = ImageEnhance.Color(img).enhance(0.95)
 
-    # 肌のシワ感を少しだけなめらかに
-    soft = img.filter(ImageFilter.GaussianBlur(radius=0.45))
-    img = Image.blend(img, soft, 0.18)
+    # 肌の質感を少しだけなめらかに
+    soft = img.filter(ImageFilter.GaussianBlur(radius=0.65))
+    img = Image.blend(img, soft, 0.20)
 
-    # 爪のツヤ感を戻す
-    img = ImageEnhance.Sharpness(img).enhance(1.22)
+    # 爪のツヤ感・輪郭を戻す
+    img = ImageEnhance.Sharpness(img).enhance(1.35)
 
     # 最終調整
     img = ImageEnhance.Brightness(img).enhance(1.03)
-    img = ImageEnhance.Contrast(img).enhance(1.03)
+    img = ImageEnhance.Contrast(img).enhance(1.04)
 
     img.save(filepath, "JPEG", quality=95, optimize=True)
 
@@ -130,14 +132,20 @@ def handle_text(event):
         )
         return
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=shop_message()))
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=shop_message())
+    )
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
 
     if user_id not in user_shop:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=shop_message()))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=shop_message())
+        )
         return
 
     shop_key = user_shop[user_id]
@@ -152,7 +160,7 @@ def handle_image(event):
         for chunk in message_content.iter_content():
             f.write(chunk)
 
-    natural_nail_retouch(filepath)
+    nail_salon_retouch(filepath)
 
     image_url = f"{BASE_URL}/static/images/{filename}"
 
@@ -161,51 +169,65 @@ def handle_image(event):
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        temperature=0.65,
+        temperature=0.55,
         messages=[
             {
                 "role": "system",
                 "content": f"""
-あなたはネイルサロンのスタッフです。
-Hot Pepper Beautyのブログ文を、実際のスタッフが書いたように自然に作成してください。
+あなたは実際のネイルサロンスタッフです。
+Hot Pepper Beautyに投稿するブログ文を自然に作成してください。
 
 絶対ルール：
-・絵文字は禁止
-・AIっぽい説明文は禁止
-・「洗練」「演出」「魅力を引き立てる」「効いた」「ぴったり」は使わない
-・文章は短め
-・売り込みすぎない
-・少しだけカジュアル
-・ネイルの特徴は拾うが、説明しすぎない
-・同じ意味の言葉を繰り返さない
-・季節感は無理に入れない
-・本文は80〜140文字程度
+・絵文字禁止
+・AIっぽい文章禁止
+・「タイトル」「本文」「ハッシュタグ」「店舗情報」という見出しは禁止
+・「洗練」「演出」「魅力」「上品」「ぴったり」「効いた」は使わない
+・説明しすぎない
+・短め
+・自然
+・少しラフ
+・営業感を出しすぎない
+・同じ言葉を繰り返さない
+・季節感を無理に入れない
+・ネイリスト本人が軽く投稿した雰囲気
 
-文章構成：
-【タイトル】
-15〜22文字くらい。自然で短め。
-
-本文：
-2〜3文。
-ネイリストが投稿するような口調。
-最後は「ご予約お待ちしております。」で締める。
-
-ハッシュタグ：
-5個。地域名タグを1個入れる。
-
-店舗情報：
+出力形式：
+1行目：タイトル風に短く。15〜22文字くらい。
+空行
+本文：2〜3文。80〜140文字程度。
+最後は自然に「ご予約お待ちしております。」または「気になる方ぜひお試しください。」で締める。
+空行
+ハッシュタグ5個。地域名タグを1個入れる。
+空行
 {shop['name']}
 {shop['info']}
 
-店舗の文体：
+店舗の雰囲気：
 {shop['style']}
+
+文章例：
+黒フレンチにパール合わせました。
+
+片手だけ黒ベースにして少し雰囲気変えてます。
+シンプルすぎない黒ネイルが好きな方におすすめです。
+ご予約お待ちしております。
+
+#黒ネイル #フレンチネイル #パールネイル #大人ネイル #八尾ネイル
 """
             },
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "このネイル画像のHot Pepper Beauty用ブログ文を作成してください。"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    {
+                        "type": "text",
+                        "text": "このネイル画像のHot Pepper Beauty用ブログ文を作成してください。"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
                 ]
             }
         ]
@@ -216,7 +238,10 @@ Hot Pepper Beautyのブログ文を、実際のスタッフが書いたように
     line_bot_api.reply_message(
         event.reply_token,
         [
-            ImageSendMessage(original_content_url=image_url, preview_image_url=image_url),
+            ImageSendMessage(
+                original_content_url=image_url,
+                preview_image_url=image_url
+            ),
             TextSendMessage(text=blog_text)
         ]
     )
