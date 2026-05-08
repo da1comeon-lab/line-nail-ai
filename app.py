@@ -7,6 +7,7 @@ from openai import OpenAI
 import os
 import uuid
 import base64
+import random
 
 app = Flask(__name__)
 
@@ -15,6 +16,7 @@ handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com")
+
 IMAGE_DIR = "static/images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -24,24 +26,32 @@ SHOPS = {
     "八尾店": {
         "name": "ネイルサロン スマイリー八尾店",
         "info": "〒581-0869 大阪府八尾市桜ヶ丘3丁目119 加島ビル1F\nTEL 072-920-7313",
-        "style": "親しみやすく、少しラフ。お客様目線でわかりやすい文章。"
+        "style": "親しみやすい。少しラフ。リアルなネイリスト感。"
     },
     "住道店": {
         "name": "ネイルサロン スマイリー住道店",
         "info": "〒574-0046 大阪府大東市赤井1丁目15-27 ポップタウン住道5番館 2F\nTEL 072-870-0585",
-        "style": "ナチュラルで女性らしく、普段使いしやすい文章。"
+        "style": "ナチュラル。女性らしい。やわらかい雰囲気。"
     },
     "心斎橋店": {
         "name": "ネイルサロン スマイリー心斎橋店",
         "info": "〒542-0086 大阪府大阪市中央区西心斎橋1丁目8-22 4階\nTEL 06-4708-7318",
-        "style": "大人っぽく、落ち着いた上品な文章。"
+        "style": "大人っぽい。シンプル。高級感。"
     },
     "マカナ": {
         "name": "ネイルサロン マカナ河内山本店",
         "info": "〒581-0013 大阪府八尾市山本町南4丁目1-3 岩田ビル506号\nTEL 070-9009-1440",
-        "style": "韓国っぽさ、透明感、トレンド感のある文章。"
+        "style": "韓国っぽ。透明感。トレンド感。"
     }
 }
+
+ENDINGS = [
+    "ご予約お待ちしております。",
+    "気になる方ぜひお試しください。",
+    "最近人気のデザインです。",
+    "派手すぎない感じが可愛いです。",
+    "大人っぽくしたい方に人気です。"
+]
 
 @app.route("/")
 def home():
@@ -63,50 +73,49 @@ def callback():
 
     return "OK"
 
-def crop_square_nail_focus(img):
+def crop_square(img):
     w, h = img.size
     size = min(w, h)
 
     left = (w - size) // 2
-    top = int((h - size) * 0.25)
+    top = int((h - size) * 0.22)
     top = max(0, min(top, h - size))
 
     return img.crop((left, top, left + size, top + size))
 
-def nail_salon_retouch(filepath):
+def improve_nail_image(filepath):
     img = Image.open(filepath).convert("RGB")
     img = ImageOps.exif_transpose(img)
 
-    # 額縁なしで正方形化
-    img = crop_square_nail_focus(img)
+    img = crop_square(img)
     img = img.resize((1080, 1080), Image.LANCZOS)
 
-    # 全体を明るく
-    img = ImageEnhance.Brightness(img).enhance(1.13)
-    img = ImageEnhance.Contrast(img).enhance(1.05)
+    # 明るく
+    img = ImageEnhance.Brightness(img).enhance(1.18)
 
-    # 赤み・黄ばみを軽減
+    # 少し白寄り
     r, g, b = img.split()
-    r = r.point(lambda i: min(255, int(i * 0.970)))
-    g = g.point(lambda i: min(255, int(i * 1.006)))
-    b = b.point(lambda i: min(255, int(i * 1.022)))
+
+    r = r.point(lambda i: int(i * 0.97))
+    g = g.point(lambda i: int(i * 1.01))
+    b = b.point(lambda i: int(i * 1.04))
+
     img = Image.merge("RGB", (r, g, b))
 
-    # 高級感寄せで彩度を少し抑える
-    img = ImageEnhance.Color(img).enhance(0.95)
+    # 肌を少し綺麗に
+    blur = img.filter(ImageFilter.GaussianBlur(radius=1.0))
+    img = Image.blend(img, blur, 0.18)
 
-    # 肌の質感を少しだけなめらかに
-    soft = img.filter(ImageFilter.GaussianBlur(radius=0.65))
-    img = Image.blend(img, soft, 0.20)
+    # 爪のツヤ感
+    img = ImageEnhance.Sharpness(img).enhance(1.55)
 
-    # 爪のツヤ感・輪郭を戻す
-    img = ImageEnhance.Sharpness(img).enhance(1.35)
+    # コントラスト
+    img = ImageEnhance.Contrast(img).enhance(1.06)
 
-    # 最終調整
-    img = ImageEnhance.Brightness(img).enhance(1.03)
-    img = ImageEnhance.Contrast(img).enhance(1.04)
+    # 彩度少しだけUP
+    img = ImageEnhance.Color(img).enhance(1.04)
 
-    img.save(filepath, "JPEG", quality=95, optimize=True)
+    img.save(filepath, quality=95)
 
 def shop_message():
     return """店舗名を送信してください。
@@ -116,8 +125,8 @@ def shop_message():
 ・心斎橋店
 ・マカナ
 
-設定後にネイル画像を送ると、
-画像加工＋ブログ文章を自動作成します。"""
+設定後に画像を送ると
+ブログ文章＋画像加工を自動作成します。"""
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
@@ -126,9 +135,12 @@ def handle_text(event):
 
     if text in SHOPS:
         user_shop[user_id] = text
+
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"{SHOPS[text]['name']}で設定しました。\nネイル画像を送ってください。")
+            TextSendMessage(
+                text=f"{SHOPS[text]['name']} を設定しました。\nネイル画像を送ってください。"
+            )
         )
         return
 
@@ -160,67 +172,77 @@ def handle_image(event):
         for chunk in message_content.iter_content():
             f.write(chunk)
 
-    nail_salon_retouch(filepath)
+    improve_nail_image(filepath)
 
     image_url = f"{BASE_URL}/static/images/{filename}"
 
-    with open(filepath, "rb") as image_file:
-        base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+    with open(filepath, "rb") as img:
+        base64_image = base64.b64encode(img.read()).decode("utf-8")
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        temperature=0.55,
-        messages=[
-            {
-                "role": "system",
-                "content": f"""
+    ending = random.choice(ENDINGS)
+
+    prompt = f"""
 あなたは実際のネイルサロンスタッフです。
-Hot Pepper Beautyに投稿するブログ文を自然に作成してください。
 
-絶対ルール：
-・絵文字禁止
-・AIっぽい文章禁止
-・「タイトル」「本文」「ハッシュタグ」「店舗情報」という見出しは禁止
-・「洗練」「演出」「魅力」「上品」「ぴったり」「効いた」は使わない
-・説明しすぎない
-・短め
-・自然
+Hot Pepper Beauty用の自然なブログを書いてください。
+
+重要：
+・AI感禁止
+・説明しすぎ禁止
+・「おすすめです」を多用しない
+・「演出」「魅力」「洗練」「上品」禁止
+・「散らしてみました」禁止
+・人が軽く投稿した感じ
 ・少しラフ
-・営業感を出しすぎない
-・同じ言葉を繰り返さない
-・季節感を無理に入れない
-・ネイリスト本人が軽く投稿した雰囲気
+・短め
+・自然な日本語
+・絵文字禁止
+・見出し禁止
+・「タイトル」「本文」など禁止
 
-出力形式：
-1行目：タイトル風に短く。15〜22文字くらい。
+出力ルール：
+
+1行目：
+短いタイトル
+
 空行
-本文：2〜3文。80〜140文字程度。
-最後は自然に「ご予約お待ちしております。」または「気になる方ぜひお試しください。」で締める。
+
+本文：
+2〜3文
+自然な会話感
+ネイリスト感
+
+最後は
+「{ending}」
+で終わる
+
 空行
-ハッシュタグ5個。地域名タグを1個入れる。
+
+ハッシュタグ5個
+
 空行
+
 {shop['name']}
 {shop['info']}
 
-店舗の雰囲気：
+店舗イメージ：
 {shop['style']}
-
-文章例：
-黒フレンチにパール合わせました。
-
-片手だけ黒ベースにして少し雰囲気変えてます。
-シンプルすぎない黒ネイルが好きな方におすすめです。
-ご予約お待ちしております。
-
-#黒ネイル #フレンチネイル #パールネイル #大人ネイル #八尾ネイル
 """
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        temperature=0.8,
+        messages=[
+            {
+                "role": "system",
+                "content": prompt
             },
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": "このネイル画像のHot Pepper Beauty用ブログ文を作成してください。"
+                        "text": "このネイル画像のブログを書いて"
                     },
                     {
                         "type": "image_url",
@@ -233,7 +255,7 @@ Hot Pepper Beautyに投稿するブログ文を自然に作成してください
         ]
     )
 
-    blog_text = response.choices[0].message.content
+    text = response.choices[0].message.content
 
     line_bot_api.reply_message(
         event.reply_token,
@@ -242,7 +264,7 @@ Hot Pepper Beautyに投稿するブログ文を自然に作成してください
                 original_content_url=image_url,
                 preview_image_url=image_url
             ),
-            TextSendMessage(text=blog_text)
+            TextSendMessage(text=text)
         ]
     )
 
