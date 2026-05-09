@@ -26,25 +26,21 @@ SHOPS = {
         "name": "ネイルサロン スマイリー八尾店",
         "info": "〒581-0869 大阪府八尾市桜ヶ丘3丁目119 加島ビル1F\nTEL 072-920-7313",
         "area_tag": "#八尾ネイル",
-        "style": "親しみやすく、少しだけカジュアル。普段使いしやすい文章。"
     },
     "住道店": {
         "name": "ネイルサロン スマイリー住道店",
         "info": "〒574-0046 大阪府大東市赤井1丁目15-27 ポップタウン住道5番館 2F\nTEL 072-870-0585",
         "area_tag": "#住道ネイル",
-        "style": "ナチュラルで女性らしい。やわらかい文章。"
     },
     "心斎橋店": {
         "name": "ネイルサロン スマイリー心斎橋店",
         "info": "〒542-0086 大阪府大阪市中央区西心斎橋1丁目8-22 4階\nTEL 06-4708-7318",
         "area_tag": "#心斎橋ネイル",
-        "style": "大人っぽく落ち着いた文章。"
     },
     "マカナ": {
         "name": "ネイルサロン マカナ河内山本店",
         "info": "〒581-0013 大阪府八尾市山本町南4丁目1-3 岩田ビル506号\nTEL 070-9009-1440",
         "area_tag": "#河内山本ネイル",
-        "style": "透明感、トレンド感、韓国っぽさを少し意識。"
     }
 }
 
@@ -54,62 +50,61 @@ GOOD_EXAMPLES = """
 
 【本文】
 黒フレンチにパールを合わせたデザインです。
-片手は黒ベースにして、シンプルすぎない雰囲気に仕上げています。
-落ち着いたカラーでも少しポイントが欲しい方におすすめです。
+
+片手は黒ベースにして、少し雰囲気を変えています。
+落ち着いた感じでまとまっていて可愛いです。
 
 ご予約お待ちしております。
 
 【タイトル】
-ベージュ系シンプルネイル
+シンプルベージュネイル
 
 【本文】
 肌なじみの良いベージュ系でまとめたデザインです。
-少しラメ感も入れているので、シンプルすぎず手元がきれいに見えます。
+
+ラメも少し入れているので、
+シンプルすぎない感じになっています。
+
 オフィスネイルにも人気です。
 
 ご予約お待ちしております。
 
 【タイトル】
-ちゅるんマグネットネイル
+マグネットネイル
 
 【本文】
-ちゅるんとしたカラーにマグネットを合わせたデザインです。
-派手すぎない仕上がりなので、普段使いにも合わせやすいです。
-さりげなくきらっとさせたい方にもおすすめです。
+ちゅるん系カラーにマグネットを合わせたデザインです。
+
+派手すぎないので、
+普段使いにも合わせやすい感じです。
 
 気になる方ぜひお試しください。
-
-【タイトル】
-シンプルフレンチネイル
-
-【本文】
-シンプルなフレンチにポイントを入れたデザインです。
-派手すぎないので、きれいめが好きな方にも合わせやすいです。
-手元をすっきり見せたい方にも人気です。
-
-ご予約お待ちしております。
-
-【タイトル】
-ピンクベージュネイル
-
-【本文】
-ピンクベージュ系でまとめたデザインです。
-ほんのりツヤ感があって、肌なじみも良いカラーです。
-シンプルだけど少し可愛さも欲しい方におすすめです。
-
-ご予約お待ちしております。
 """
 
-NG_WORDS = """
-洗練、演出、魅力、映える、ワンランク、個性的、華やかさをプラス、アクセントが効いた、
-散らしてみました、ポツポツ、上品な印象、女性らしさを演出、存在感抜群、指先を彩る、
-トレンド感たっぷり、こなれ感、目を惹く、オシャレ度アップ、格上げ、魅力的
-"""
+NG_WORDS = [
+    "個性",
+    "個性的",
+    "魅力",
+    "洗練",
+    "演出",
+    "アクセント",
+    "存在感",
+    "ワンランク",
+    "華やか",
+    "映える",
+    "ポツポツ",
+    "散らして",
+    "上品",
+    "こなれ感",
+    "指先を彩る",
+    "トレンド感たっぷり",
+    "シンプルながら",
+]
 
 ENDINGS = [
     "ご予約お待ちしております。",
-    "気になる方ぜひお試しください。",
-    "ご来店お待ちしております。"
+    "ご来店お待ちしております。",
+    "気になる方ぜひお試しください。"
 ]
 
 @app.route("/")
@@ -135,9 +130,11 @@ def callback():
 def crop_square(img):
     w, h = img.size
     size = min(w, h)
+
     left = (w - size) // 2
-    top = int((h - size) * 0.23)
+    top = int((h - size) * 0.22)
     top = max(0, min(top, h - size))
+
     return img.crop((left, top, left + size, top + size))
 
 def improve_nail_image(filepath):
@@ -147,25 +144,25 @@ def improve_nail_image(filepath):
     img = crop_square(img)
     img = img.resize((1080, 1080), Image.LANCZOS)
 
-    img = ImageEnhance.Brightness(img).enhance(1.15)
-    img = ImageEnhance.Contrast(img).enhance(1.05)
+    img = ImageEnhance.Brightness(img).enhance(1.12)
+    img = ImageEnhance.Contrast(img).enhance(1.04)
 
     r, g, b = img.split()
-    r = r.point(lambda i: min(255, int(i * 0.975)))
-    g = g.point(lambda i: min(255, int(i * 1.006)))
-    b = b.point(lambda i: min(255, int(i * 1.025)))
+
+    r = r.point(lambda i: min(255, int(i * 0.97)))
+    g = g.point(lambda i: min(255, int(i * 1.01)))
+    b = b.point(lambda i: min(255, int(i * 1.03)))
+
     img = Image.merge("RGB", (r, g, b))
 
-    img = ImageEnhance.Color(img).enhance(0.98)
+    img = ImageEnhance.Color(img).enhance(0.97)
 
     soft = img.filter(ImageFilter.GaussianBlur(radius=0.7))
-    img = Image.blend(img, soft, 0.16)
+    img = Image.blend(img, soft, 0.13)
 
-    img = ImageEnhance.Sharpness(img).enhance(1.38)
-    img = ImageEnhance.Brightness(img).enhance(1.02)
-    img = ImageEnhance.Contrast(img).enhance(1.03)
+    img = ImageEnhance.Sharpness(img).enhance(1.35)
 
-    img.save(filepath, "JPEG", quality=95, optimize=True)
+    img.save(filepath, "JPEG", quality=95)
 
 def shop_message():
     return """店舗名を送信してください。
@@ -185,9 +182,12 @@ def handle_text(event):
 
     if text in SHOPS:
         user_shop[user_id] = text
+
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"{SHOPS[text]['name']}で設定しました。\nネイル画像を送ってください。")
+            TextSendMessage(
+                text=f"{SHOPS[text]['name']}で設定しました。\nネイル画像を送ってください。"
+            )
         )
         return
 
@@ -196,8 +196,87 @@ def handle_text(event):
         TextSendMessage(text=shop_message())
     )
 
+def generate_blog(base64_image, shop, ending):
+
+    prompt = f"""
+あなたは実際のネイルサロンスタッフです。
+
+Hot Pepper Beauty用の自然なブログ文を書いてください。
+
+最重要：
+AIっぽくしない。
+普通のネイリストが書いたような自然な文章。
+
+参考文章：
+{GOOD_EXAMPLES}
+
+ルール：
+・短め
+・説明しすぎない
+・オシャレに言いすぎない
+・普通のサロン文
+・変に褒めすぎない
+・自然な日本語
+・絵文字禁止
+
+禁止ワード：
+{",".join(NG_WORDS)}
+
+出力形式：
+
+【タイトル】
+タイトル
+
+【本文】
+本文
+
+#ハッシュタグ
+
+{shop['name']}
+{shop['info']}
+
+最後は必ず
+「{ending}」
+で締める。
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4.1",
+        temperature=0.38,
+        messages=[
+            {
+                "role": "system",
+                "content": prompt
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "このネイル画像のブログ文を作成してください。"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    text = response.choices[0].message.content
+
+    for ng in NG_WORDS:
+        if ng in text:
+            return None
+
+    return text
+
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
+
     user_id = event.source.user_id
 
     if user_id not in user_shop:
@@ -226,68 +305,20 @@ def handle_image(event):
     with open(filepath, "rb") as img:
         base64_image = base64.b64encode(img.read()).decode("utf-8")
 
-    ending = random.choice(ENDINGS)
+    text = None
 
-    prompt = f"""
-あなたは実際のネイルサロンスタッフです。
-Hot Pepper Beautyに投稿するブログ文を作成してください。
+    for _ in range(5):
 
-目標：
-普通のネイリストが書いたような、自然で無難なサロンブログ文。
+        ending = random.choice(ENDINGS)
 
-参考にする文章の雰囲気：
-{GOOD_EXAMPLES}
+        result = generate_blog(base64_image, shop, ending)
 
-絶対ルール：
-・絵文字は禁止
-・AIっぽい文章は禁止
-・変にラフにしすぎない
-・オシャレに言いすぎない
-・説明しすぎない
-・本文は丁寧で普通のサロン文
-・短めで読みやすく
-・「おすすめです」は使ってもいいが1回まで
-・下記のNGワードは使わない
+        if result:
+            text = result
+            break
 
-NGワード：
-{NG_WORDS}
-
-出力形式は必ずこれ：
-
-【タイトル】
-20文字前後の自然なタイトル
-
-【本文】
-2〜4文。
-画像のデザインを自然に説明。
-最後は「{ending}」で締める。
-
-ハッシュタグ5個。
-必ず地域タグ {shop['area_tag']} を1個入れる。
-
-{shop['name']}
-{shop['info']}
-
-店舗の文体：
-{shop['style']}
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        temperature=0.45,
-        messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "このネイル画像のHot Pepper Beauty用ブログ文を作成してください。"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ]
-    )
-
-    text = response.choices[0].message.content
+    if not text:
+        text = "文章生成に失敗しました。"
 
     line_bot_api.reply_message(
         event.reply_token,
