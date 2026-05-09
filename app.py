@@ -16,7 +16,6 @@ handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com")
-
 IMAGE_DIR = "static/images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -26,31 +25,91 @@ SHOPS = {
     "八尾店": {
         "name": "ネイルサロン スマイリー八尾店",
         "info": "〒581-0869 大阪府八尾市桜ヶ丘3丁目119 加島ビル1F\nTEL 072-920-7313",
-        "style": "親しみやすい。少しラフ。リアルなネイリスト感。"
+        "area_tag": "#八尾ネイル",
+        "style": "親しみやすく、少しだけカジュアル。普段使いしやすい文章。"
     },
     "住道店": {
         "name": "ネイルサロン スマイリー住道店",
         "info": "〒574-0046 大阪府大東市赤井1丁目15-27 ポップタウン住道5番館 2F\nTEL 072-870-0585",
-        "style": "ナチュラル。女性らしい。やわらかい雰囲気。"
+        "area_tag": "#住道ネイル",
+        "style": "ナチュラルで女性らしい。やわらかい文章。"
     },
     "心斎橋店": {
         "name": "ネイルサロン スマイリー心斎橋店",
         "info": "〒542-0086 大阪府大阪市中央区西心斎橋1丁目8-22 4階\nTEL 06-4708-7318",
-        "style": "大人っぽい。シンプル。高級感。"
+        "area_tag": "#心斎橋ネイル",
+        "style": "大人っぽく落ち着いた文章。"
     },
     "マカナ": {
         "name": "ネイルサロン マカナ河内山本店",
         "info": "〒581-0013 大阪府八尾市山本町南4丁目1-3 岩田ビル506号\nTEL 070-9009-1440",
-        "style": "韓国っぽ。透明感。トレンド感。"
+        "area_tag": "#河内山本ネイル",
+        "style": "透明感、トレンド感、韓国っぽさを少し意識。"
     }
 }
+
+GOOD_EXAMPLES = """
+【タイトル】
+ブラックフレンチ×パールネイル
+
+【本文】
+黒フレンチにパールを合わせたデザインです。
+片手は黒ベースにして、シンプルすぎない雰囲気に仕上げています。
+落ち着いたカラーでも少しポイントが欲しい方におすすめです。
+
+ご予約お待ちしております。
+
+【タイトル】
+ベージュ系シンプルネイル
+
+【本文】
+肌なじみの良いベージュ系でまとめたデザインです。
+少しラメ感も入れているので、シンプルすぎず手元がきれいに見えます。
+オフィスネイルにも人気です。
+
+ご予約お待ちしております。
+
+【タイトル】
+ちゅるんマグネットネイル
+
+【本文】
+ちゅるんとしたカラーにマグネットを合わせたデザインです。
+派手すぎない仕上がりなので、普段使いにも合わせやすいです。
+さりげなくきらっとさせたい方にもおすすめです。
+
+気になる方ぜひお試しください。
+
+【タイトル】
+シンプルフレンチネイル
+
+【本文】
+シンプルなフレンチにポイントを入れたデザインです。
+派手すぎないので、きれいめが好きな方にも合わせやすいです。
+手元をすっきり見せたい方にも人気です。
+
+ご予約お待ちしております。
+
+【タイトル】
+ピンクベージュネイル
+
+【本文】
+ピンクベージュ系でまとめたデザインです。
+ほんのりツヤ感があって、肌なじみも良いカラーです。
+シンプルだけど少し可愛さも欲しい方におすすめです。
+
+ご予約お待ちしております。
+"""
+
+NG_WORDS = """
+洗練、演出、魅力、映える、ワンランク、個性的、華やかさをプラス、アクセントが効いた、
+散らしてみました、ポツポツ、上品な印象、女性らしさを演出、存在感抜群、指先を彩る、
+トレンド感たっぷり、こなれ感、目を惹く、オシャレ度アップ、格上げ、魅力的
+"""
 
 ENDINGS = [
     "ご予約お待ちしております。",
     "気になる方ぜひお試しください。",
-    "最近人気のデザインです。",
-    "派手すぎない感じが可愛いです。",
-    "大人っぽくしたい方に人気です。"
+    "ご来店お待ちしております。"
 ]
 
 @app.route("/")
@@ -76,11 +135,9 @@ def callback():
 def crop_square(img):
     w, h = img.size
     size = min(w, h)
-
     left = (w - size) // 2
-    top = int((h - size) * 0.22)
+    top = int((h - size) * 0.23)
     top = max(0, min(top, h - size))
-
     return img.crop((left, top, left + size, top + size))
 
 def improve_nail_image(filepath):
@@ -90,32 +147,25 @@ def improve_nail_image(filepath):
     img = crop_square(img)
     img = img.resize((1080, 1080), Image.LANCZOS)
 
-    # 明るく
-    img = ImageEnhance.Brightness(img).enhance(1.18)
+    img = ImageEnhance.Brightness(img).enhance(1.15)
+    img = ImageEnhance.Contrast(img).enhance(1.05)
 
-    # 少し白寄り
     r, g, b = img.split()
-
-    r = r.point(lambda i: int(i * 0.97))
-    g = g.point(lambda i: int(i * 1.01))
-    b = b.point(lambda i: int(i * 1.04))
-
+    r = r.point(lambda i: min(255, int(i * 0.975)))
+    g = g.point(lambda i: min(255, int(i * 1.006)))
+    b = b.point(lambda i: min(255, int(i * 1.025)))
     img = Image.merge("RGB", (r, g, b))
 
-    # 肌を少し綺麗に
-    blur = img.filter(ImageFilter.GaussianBlur(radius=1.0))
-    img = Image.blend(img, blur, 0.18)
+    img = ImageEnhance.Color(img).enhance(0.98)
 
-    # 爪のツヤ感
-    img = ImageEnhance.Sharpness(img).enhance(1.55)
+    soft = img.filter(ImageFilter.GaussianBlur(radius=0.7))
+    img = Image.blend(img, soft, 0.16)
 
-    # コントラスト
-    img = ImageEnhance.Contrast(img).enhance(1.06)
+    img = ImageEnhance.Sharpness(img).enhance(1.38)
+    img = ImageEnhance.Brightness(img).enhance(1.02)
+    img = ImageEnhance.Contrast(img).enhance(1.03)
 
-    # 彩度少しだけUP
-    img = ImageEnhance.Color(img).enhance(1.04)
-
-    img.save(filepath, quality=95)
+    img.save(filepath, "JPEG", quality=95, optimize=True)
 
 def shop_message():
     return """店舗名を送信してください。
@@ -125,8 +175,8 @@ def shop_message():
 ・心斎橋店
 ・マカナ
 
-設定後に画像を送ると
-ブログ文章＋画像加工を自動作成します。"""
+設定後にネイル画像を送ると、
+画像加工＋ブログ文章を自動作成します。"""
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
@@ -135,12 +185,9 @@ def handle_text(event):
 
     if text in SHOPS:
         user_shop[user_id] = text
-
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(
-                text=f"{SHOPS[text]['name']} を設定しました。\nネイル画像を送ってください。"
-            )
+            TextSendMessage(text=f"{SHOPS[text]['name']}で設定しました。\nネイル画像を送ってください。")
         )
         return
 
@@ -183,73 +230,58 @@ def handle_image(event):
 
     prompt = f"""
 あなたは実際のネイルサロンスタッフです。
+Hot Pepper Beautyに投稿するブログ文を作成してください。
 
-Hot Pepper Beauty用の自然なブログを書いてください。
+目標：
+普通のネイリストが書いたような、自然で無難なサロンブログ文。
 
-重要：
-・AI感禁止
-・説明しすぎ禁止
-・「おすすめです」を多用しない
-・「演出」「魅力」「洗練」「上品」禁止
-・「散らしてみました」禁止
-・人が軽く投稿した感じ
-・少しラフ
-・短め
-・自然な日本語
-・絵文字禁止
-・見出し禁止
-・「タイトル」「本文」など禁止
+参考にする文章の雰囲気：
+{GOOD_EXAMPLES}
 
-出力ルール：
+絶対ルール：
+・絵文字は禁止
+・AIっぽい文章は禁止
+・変にラフにしすぎない
+・オシャレに言いすぎない
+・説明しすぎない
+・本文は丁寧で普通のサロン文
+・短めで読みやすく
+・「おすすめです」は使ってもいいが1回まで
+・下記のNGワードは使わない
 
-1行目：
-短いタイトル
+NGワード：
+{NG_WORDS}
 
-空行
+出力形式は必ずこれ：
 
-本文：
-2〜3文
-自然な会話感
-ネイリスト感
+【タイトル】
+20文字前後の自然なタイトル
 
-最後は
-「{ending}」
-で終わる
+【本文】
+2〜4文。
+画像のデザインを自然に説明。
+最後は「{ending}」で締める。
 
-空行
-
-ハッシュタグ5個
-
-空行
+ハッシュタグ5個。
+必ず地域タグ {shop['area_tag']} を1個入れる。
 
 {shop['name']}
 {shop['info']}
 
-店舗イメージ：
+店舗の文体：
 {shop['style']}
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        temperature=0.8,
+        temperature=0.45,
         messages=[
-            {
-                "role": "system",
-                "content": prompt
-            },
+            {"role": "system", "content": prompt},
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": "このネイル画像のブログを書いて"
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}"
-                        }
-                    }
+                    {"type": "text", "text": "このネイル画像のHot Pepper Beauty用ブログ文を作成してください。"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]
             }
         ]
