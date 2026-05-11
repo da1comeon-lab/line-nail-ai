@@ -1,4 +1,4 @@
-from flask import Flask, request, send_from_directory, redirect
+from flask import Flask, request, send_from_directory, redirect, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
@@ -9,8 +9,10 @@ import os
 import uuid
 import base64
 import random
+import secrets
 
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 
 line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
@@ -84,9 +86,23 @@ ENDINGS = [
     "気になる方ぜひお試しください。"
 ]
 
+
+def google_client_config():
+    return {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [GOOGLE_REDIRECT_URI]
+        }
+    }
+
+
 @app.route("/")
 def home():
     return "LINE Nail AI Running"
+
 
 @app.route("/google-login")
 def google_login():
@@ -94,16 +110,9 @@ def google_login():
         return "Googleの環境変数が設定されていません。"
 
     flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [GOOGLE_REDIRECT_URI]
-            }
-        },
-        scopes=SCOPES
+        google_client_config(),
+        scopes=SCOPES,
+        autogenerate_code_verifier=True
     )
 
     flow.redirect_uri = GOOGLE_REDIRECT_URI
@@ -114,30 +123,41 @@ def google_login():
         prompt="consent"
     )
 
+    session["oauth_state"] = state
+    session["code_verifier"] = flow.code_verifier
+
     return redirect(authorization_url)
+
 
 @app.route("/oauth2callback")
 def oauth2callback():
     try:
+        state = session.get("oauth_state")
+        code_verifier = session.get("code_verifier")
+
+        if not state or not code_verifier:
+            return "Google連携エラー：セッション情報が切れています。もう一度 /google-login からやり直してください。"
+
         flow = Flow.from_client_config(
-            {
-                "web": {
-                    "client_id": GOOGLE_CLIENT_ID,
-                    "client_secret": GOOGLE_CLIENT_SECRET,
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "redirect_uris": [GOOGLE_REDIRECT_URI]
-                }
-            },
-            scopes=SCOPES
+            google_client_config(),
+            scopes=SCOPES,
+            state=state
         )
 
         flow.redirect_uri = GOOGLE_REDIRECT_URI
+        flow.code_verifier = code_verifier
+
         flow.fetch_token(authorization_response=request.url)
 
         credentials = flow.credentials
-
         refresh_token = credentials.refresh_token
+
+        if not refresh_token:
+            return """
+            Google連携は成功しましたが、refresh_token が取得できませんでした。<br><br>
+            もう一度 /google-login を開いて許可し直してください。<br>
+            それでも出ない場合は、Googleアカウント側のアプリ連携を削除してから再実行します。
+            """
 
         return f"""
         Google連携成功<br><br>
@@ -152,9 +172,11 @@ def oauth2callback():
     except Exception as e:
         return f"Google連携エラー：{e}"
 
+
 @app.route("/static/images/<filename>")
 def serve_image(filename):
     return send_from_directory(IMAGE_DIR, filename)
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -171,6 +193,7 @@ def callback():
 
     return "OK"
 
+
 def crop_square(img):
     w, h = img.size
     size = min(w, h)
@@ -178,6 +201,7 @@ def crop_square(img):
     top = int((h - size) * 0.25)
     top = max(0, min(top, h - size))
     return img.crop((left, top, left + size, top + size))
+
 
 def improve_nail_image(filepath):
     img = Image.open(filepath).convert("RGB")
@@ -204,10 +228,12 @@ def improve_nail_image(filepath):
 
     img.save(filepath, "JPEG", quality=95, optimize=True)
 
+
 def clean_text(text):
     for old, new in NG_REPLACE.items():
         text = text.replace(old, new)
     return text.strip()
+
 
 def shop_message():
     return """店舗名を送信してください。
@@ -219,6 +245,7 @@ def shop_message():
 
 設定後にネイル画像を送ると、
 画像加工＋ブログ文章を自動作成します。"""
+
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
@@ -237,6 +264,7 @@ def handle_text(event):
         event.reply_token,
         TextSendMessage(text=shop_message())
     )
+
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
@@ -345,6 +373,7 @@ Hot Pepper Beautyに投稿するブログ文を作成してください。
             event.reply_token,
             TextSendMessage(text="エラーが出ました。もう一度画像を送ってください。")
         )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
