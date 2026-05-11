@@ -5,11 +5,13 @@ from linebot.exceptions import InvalidSignatureError
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from openai import OpenAI
 from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
 import os
 import uuid
 import base64
 import random
 import secrets
+import requests
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
@@ -24,6 +26,7 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
 GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
 
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
@@ -99,6 +102,30 @@ def google_client_config():
     }
 
 
+def get_google_credentials():
+    if not GOOGLE_REFRESH_TOKEN:
+        return None
+
+    return Credentials(
+        token=None,
+        refresh_token=GOOGLE_REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=SCOPES
+    )
+
+
+def get_access_token():
+    creds = get_google_credentials()
+    if not creds:
+        return None
+
+    from google.auth.transport.requests import Request
+    creds.refresh(Request())
+    return creds.token
+
+
 @app.route("/")
 def home():
     return "LINE Nail AI Running"
@@ -153,24 +180,99 @@ def oauth2callback():
         refresh_token = credentials.refresh_token
 
         if not refresh_token:
-            return """
-            Google連携は成功しましたが、refresh_token が取得できませんでした。<br><br>
-            もう一度 /google-login を開いて許可し直してください。<br>
-            それでも出ない場合は、Googleアカウント側のアプリ連携を削除してから再実行します。
-            """
+            return "Google連携は成功しましたが、refresh_token が取得できませんでした。もう一度 /google-login を開いて許可し直してください。"
 
         return f"""
         Google連携成功<br><br>
         次にRenderのEnvironmentへ下記を追加してください。<br><br>
-
         KEY：GOOGLE_REFRESH_TOKEN<br>
         VALUE：{refresh_token}<br><br>
-
         この画面の内容は他人に見せないでください。
         """
 
     except Exception as e:
         return f"Google連携エラー：{e}"
+
+
+@app.route("/google-locations")
+def google_locations():
+    try:
+        token = get_access_token()
+
+        if not token:
+            return "GOOGLE_REFRESH_TOKEN が設定されていません。"
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+        }
+
+        # アカウント一覧取得
+        accounts_res = requests.get(
+            "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
+            headers=headers
+        )
+
+        if accounts_res.status_code != 200:
+            return f"""
+            Googleアカウント取得エラー<br>
+            status: {accounts_res.status_code}<br>
+            body: {accounts_res.text}
+            """
+
+        accounts = accounts_res.json().get("accounts", [])
+
+        if not accounts:
+            return "Googleビジネスアカウントが見つかりませんでした。"
+
+        html = "<h2>Googleビジネス 店舗一覧</h2>"
+
+        for account in accounts:
+            account_name = account.get("name")
+            account_title = account.get("accountName", "")
+
+            html += f"<h3>{account_title}<br>{account_name}</h3>"
+
+            locations_res = requests.get(
+                f"https://mybusinessbusinessinformation.googleapis.com/v1/{account_name}/locations?readMask=name,title,storefrontAddress",
+                headers=headers
+            )
+
+            html += f"<p>locations status: {locations_res.status_code}</p>"
+
+            if locations_res.status_code != 200:
+                html += f"<pre>{locations_res.text}</pre>"
+                continue
+
+            locations = locations_res.json().get("locations", [])
+
+            if not locations:
+                html += "<p>店舗なし</p>"
+                continue
+
+            html += "<ul>"
+            for loc in locations:
+                name = loc.get("name", "")
+                title = loc.get("title", "")
+                address = loc.get("storefrontAddress", {})
+                lines = address.get("addressLines", [])
+                postal = address.get("postalCode", "")
+                admin = address.get("administrativeArea", "")
+                locality = address.get("locality", "")
+
+                html += f"""
+                <li>
+                    <b>{title}</b><br>
+                    location_id: {name}<br>
+                    {postal} {admin} {locality} {' '.join(lines)}
+                </li><br>
+                """
+            html += "</ul>"
+
+        return html
+
+    except Exception as e:
+        return f"Google店舗取得エラー：{e}"
 
 
 @app.route("/static/images/<filename>")
