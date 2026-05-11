@@ -1,9 +1,10 @@
-from flask import Flask, request, send_from_directory
+from flask import Flask, request, send_from_directory, redirect
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from openai import OpenAI
+from google_auth_oauthlib.flow import Flow
 import os
 import uuid
 import base64
@@ -18,6 +19,12 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com")
 IMAGE_DIR = "static/images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
+
+SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
 user_shop = {}
 
@@ -54,56 +61,14 @@ GOOD_EXAMPLES = """
 落ち着いたカラーでも少しポイントが欲しい方におすすめです。
 
 ご予約お待ちしております。
-
-【タイトル】
-ベージュ系シンプルネイル
-
-【本文】
-肌なじみの良いベージュ系でまとめたデザインです。
-少しラメ感も入れているので、シンプルすぎず手元がきれいに見えます。
-オフィスネイルにも人気です。
-
-ご予約お待ちしております。
-
-【タイトル】
-ピンクベージュネイル
-
-【本文】
-ピンクベージュ系でまとめたデザインです。
-肌なじみが良く、手元がきれいに見えるカラーです。
-シンプルだけど少し可愛さも欲しい方におすすめです。
-
-ご予約お待ちしております。
-
-【タイトル】
-マグネットネイル
-
-【本文】
-マグネットを使ったシンプルなデザインです。
-角度によって見え方が変わるので、派手すぎず少し変化も楽しめます。
-普段使いにも合わせやすいネイルです。
-
-ご予約お待ちしております。
-
-【タイトル】
-フレンチネイル
-
-【本文】
-シンプルなフレンチネイルです。
-カラーを変えるだけでも雰囲気が変わるので、きれいめが好きな方にも人気です。
-手元をすっきり見せたい方にもおすすめです。
-
-ご予約お待ちしております。
 """
 
 NG_REPLACE = {
     "個性的": "少し雰囲気のある",
     "個性": "雰囲気",
-    "洗練された": "すっきりした",
     "洗練": "すっきり",
     "演出": "仕上がり",
     "魅力": "良さ",
-    "アクセントが効いた": "ポイントを入れた",
     "アクセント": "ポイント",
     "存在感": "ほどよいポイント感",
     "ワンランク": "",
@@ -111,8 +76,6 @@ NG_REPLACE = {
     "ポツポツ": "少し",
     "散らして": "合わせて",
     "シンプルながら": "シンプルですが",
-    "上品": "きれいめ",
-    "華やか": "明るい印象",
 }
 
 ENDINGS = [
@@ -124,6 +87,70 @@ ENDINGS = [
 @app.route("/")
 def home():
     return "LINE Nail AI Running"
+
+@app.route("/google-login")
+def google_login():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return "Googleの環境変数が設定されていません。"
+
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [GOOGLE_REDIRECT_URI]
+            }
+        },
+        scopes=SCOPES
+    )
+
+    flow.redirect_uri = GOOGLE_REDIRECT_URI
+
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent"
+    )
+
+    return redirect(authorization_url)
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    try:
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "client_secret": GOOGLE_CLIENT_SECRET,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": [GOOGLE_REDIRECT_URI]
+                }
+            },
+            scopes=SCOPES
+        )
+
+        flow.redirect_uri = GOOGLE_REDIRECT_URI
+        flow.fetch_token(authorization_response=request.url)
+
+        credentials = flow.credentials
+
+        refresh_token = credentials.refresh_token
+
+        return f"""
+        Google連携成功<br><br>
+        次にRenderのEnvironmentへ下記を追加してください。<br><br>
+
+        KEY：GOOGLE_REFRESH_TOKEN<br>
+        VALUE：{refresh_token}<br><br>
+
+        この画面の内容は他人に見せないでください。
+        """
+
+    except Exception as e:
+        return f"Google連携エラー：{e}"
 
 @app.route("/static/images/<filename>")
 def serve_image(filename):
@@ -159,25 +186,20 @@ def improve_nail_image(filepath):
     img = crop_square(img)
     img = img.resize((1080, 1080), Image.LANCZOS)
 
-    # 自然補正：白飛びさせず、暗さだけ少し取る
     img = ImageEnhance.Brightness(img).enhance(1.06)
     img = ImageEnhance.Contrast(img).enhance(1.04)
 
-    # 黄ばみと赤みをほんの少しだけ補正
     r, g, b = img.split()
     r = r.point(lambda i: min(255, int(i * 0.990)))
     g = g.point(lambda i: min(255, int(i * 1.002)))
     b = b.point(lambda i: min(255, int(i * 1.010)))
     img = Image.merge("RGB", (r, g, b))
 
-    # 色味は飛ばさない
     img = ImageEnhance.Color(img).enhance(1.02)
 
-    # 肌だけでなく全体をほんの少しなめらかに
     soft = img.filter(ImageFilter.GaussianBlur(radius=0.35))
     img = Image.blend(img, soft, 0.08)
 
-    # 爪の輪郭とツヤ感を軽く戻す
     img = ImageEnhance.Sharpness(img).enhance(1.18)
 
     img.save(filepath, "JPEG", quality=95, optimize=True)
@@ -255,7 +277,6 @@ Hot Pepper Beautyに投稿するブログ文を作成してください。
 
 目標：
 普通のネイリストが書いたような、自然で無難なサロンブログ文。
-変にラフにせず、丁寧で読みやすい文章にしてください。
 
 参考文章：
 {GOOD_EXAMPLES}
