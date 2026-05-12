@@ -11,6 +11,7 @@ import uuid
 import base64
 import random
 import secrets
+import time
 import requests
 
 app = Flask(__name__)
@@ -30,6 +31,7 @@ GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
 GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
 
 INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+INSTAGRAM_USER_ID = os.getenv("INSTAGRAM_USER_ID")
 
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
@@ -128,9 +130,80 @@ def get_access_token():
     return creds.token
 
 
+def build_instagram_caption(text):
+    base_tags = "#ネイル #ネイルデザイン #大阪ネイル #大人ネイル #シンプルネイル"
+    return f"{text}\n\n{base_tags}"
+
+
+def publish_to_instagram(image_url, caption):
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return False, "INSTAGRAM_ACCESS_TOKEN が未設定です。"
+
+    if not INSTAGRAM_USER_ID:
+        return False, "INSTAGRAM_USER_ID が未設定です。"
+
+    create_url = f"https://graph.instagram.com/v22.0/{INSTAGRAM_USER_ID}/media"
+
+    create_res = requests.post(
+        create_url,
+        data={
+            "image_url": image_url,
+            "caption": caption,
+            "access_token": INSTAGRAM_ACCESS_TOKEN
+        },
+        timeout=60
+    )
+
+    if create_res.status_code not in [200, 201]:
+        return False, f"media作成エラー status:{create_res.status_code} body:{create_res.text}"
+
+    creation_id = create_res.json().get("id")
+
+    if not creation_id:
+        return False, f"creation_id が取得できませんでした: {create_res.text}"
+
+    time.sleep(8)
+
+    publish_url = f"https://graph.instagram.com/v22.0/{INSTAGRAM_USER_ID}/media_publish"
+
+    publish_res = requests.post(
+        publish_url,
+        data={
+            "creation_id": creation_id,
+            "access_token": INSTAGRAM_ACCESS_TOKEN
+        },
+        timeout=60
+    )
+
+    if publish_res.status_code not in [200, 201]:
+        return False, f"publishエラー status:{publish_res.status_code} body:{publish_res.text}"
+
+    return True, publish_res.text
+
+
 @app.route("/")
 def home():
     return "LINE Nail AI Running"
+
+
+@app.route("/privacy")
+def privacy():
+    return """
+    <h1>Privacy Policy</h1>
+    <p>This app is used internally by Nail salon Smily / Makana to process salon photos and create social media posts.</p>
+    <p>We do not sell personal data. Access tokens are stored securely as environment variables.</p>
+    <p>Contact: da1.comeon@gmail.com</p>
+    """
+
+
+@app.route("/terms")
+def terms():
+    return """
+    <h1>Terms of Service</h1>
+    <p>This app is an internal business tool for Nail salon Smily / Makana.</p>
+    <p>It is used to assist with photo processing and post creation for official salon accounts.</p>
+    <p>Contact: da1.comeon@gmail.com</p>
+    """
 
 
 @app.route("/instagram-test")
@@ -138,28 +211,42 @@ def instagram_test():
     if not INSTAGRAM_ACCESS_TOKEN:
         return "INSTAGRAM_ACCESS_TOKEN が未設定です。RenderのEnvironmentを確認してください。"
 
-    results = []
+    if not INSTAGRAM_USER_ID:
+        return "INSTAGRAM_USER_ID が未設定です。RenderのEnvironmentを確認してください。"
 
-    test_urls = [
-        "https://graph.facebook.com/v20.0/me?fields=id,name",
-        "https://graph.facebook.com/v20.0/me/accounts",
-        "https://graph.instagram.com/me?fields=id,username"
-    ]
+    test_url = f"https://graph.instagram.com/v22.0/{INSTAGRAM_USER_ID}"
+    res = requests.get(
+        test_url,
+        params={
+            "fields": "id,username",
+            "access_token": INSTAGRAM_ACCESS_TOKEN
+        },
+        timeout=30
+    )
 
-    for url in test_urls:
-        res = requests.get(
-            url,
-            params={"access_token": INSTAGRAM_ACCESS_TOKEN}
-        )
+    return f"""
+    <h2>Instagram Token Test</h2>
+    <p>status: {res.status_code}</p>
+    <pre>{res.text}</pre>
+    """
 
-        results.append(f"""
-        <h3>{url}</h3>
-        <p>status: {res.status_code}</p>
-        <pre>{res.text}</pre>
-        <hr>
-        """)
 
-    return "<h2>Instagram Token Test</h2>" + "".join(results)
+@app.route("/instagram-post-test")
+def instagram_post_test():
+    sample_image_url = f"{BASE_URL}/static/images/instagram-test.jpg"
+    caption = build_instagram_caption(
+        "Instagram投稿テストです。\n画像URLとアクセストークンの確認用投稿です。"
+    )
+
+    ok, result = publish_to_instagram(sample_image_url, caption)
+
+    return f"""
+    <h2>Instagram Post Test</h2>
+    <p>image_url: {sample_image_url}</p>
+    <p>success: {ok}</p>
+    <pre>{result}</pre>
+    <p>※ static/images/instagram-test.jpg が存在しない場合はエラーになります。</p>
+    """
 
 
 @app.route("/google-login")
@@ -240,7 +327,8 @@ def google_locations():
 
         accounts_res = requests.get(
             "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
-            headers=headers
+            headers=headers,
+            timeout=30
         )
 
         if accounts_res.status_code != 200:
@@ -265,7 +353,8 @@ def google_locations():
 
             locations_res = requests.get(
                 f"https://mybusinessbusinessinformation.googleapis.com/v1/{account_name}/locations?readMask=name,title,storefrontAddress",
-                headers=headers
+                headers=headers,
+                timeout=30
             )
 
             html += f"<p>locations status: {locations_res.status_code}</p>"
@@ -433,10 +522,10 @@ def handle_image(event):
 
         prompt = f"""
 あなたは実際のネイルサロンスタッフです。
-Hot Pepper Beautyに投稿するブログ文を作成してください。
+Hot Pepper BeautyとInstagramに使えるネイル投稿文を作成してください。
 
 目標：
-普通のネイリストが書いたような、自然で無難なサロンブログ文。
+普通のネイリストが書いたような、自然で無難なサロン文章。
 
 参考文章：
 {GOOD_EXAMPLES}
@@ -478,7 +567,7 @@ Hot Pepper Beautyに投稿するブログ文を作成してください。
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "このネイル画像のHot Pepper Beauty用ブログ文を作成してください。"},
+                        {"type": "text", "text": "このネイル画像の投稿文を作成してください。"},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
@@ -488,6 +577,8 @@ Hot Pepper Beautyに投稿するブログ文を作成してください。
         text = response.choices[0].message.content
         text = clean_text(text)
 
+        # Instagram自動投稿は「Instagram投稿」とメッセージ送信された時だけ実行
+        # 通常の画像送信では、今まで通り画像＋文章だけ返す
         line_bot_api.reply_message(
             event.reply_token,
             [
