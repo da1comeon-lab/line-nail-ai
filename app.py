@@ -234,7 +234,7 @@ def instagram_test():
 
 @app.route("/instagram-post-test")
 def instagram_post_test():
-    sample_image_url = f"{BASE_URL}/static/images/instagram-test.jpg"
+    sample_image_url = "https://raw.githubusercontent.com/da1comeon-lab/line-nail-ai/main/static/images/instagram-test.jpg"
     caption = build_instagram_caption(
         "Instagram投稿テストです。\n画像URLとアクセストークンの確認用投稿です。"
     )
