@@ -149,6 +149,7 @@ def publish_to_instagram(image_url, caption):
         data={
             "image_url": image_url,
             "caption": caption,
+            "media_type": "IMAGE",
             "access_token": INSTAGRAM_ACCESS_TOKEN
         },
         timeout=60
@@ -245,7 +246,8 @@ def instagram_post_test():
     <p>image_url: {sample_image_url}</p>
     <p>success: {ok}</p>
     <pre>{result}</pre>
-    <p>※ static/images/instagram-test.jpg が存在しない場合はエラーになります。</p>
+    <p>画像条件：static/images/instagram-test.jpg に本物のJPEG画像を置いてください。</p>
+    <p>推奨：1080×1080の正方形JPG。縦長すぎる画像はInstagram側で弾かれることがあります。</p>
     """
 
 
