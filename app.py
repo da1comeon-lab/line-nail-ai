@@ -1,4 +1,4 @@
-from flask import Flask, request, send_from_directory, redirect, session
+from flask import Flask, request, send_from_directory, send_file, redirect, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
@@ -232,9 +232,25 @@ def instagram_test():
     """
 
 
+
+@app.route("/instagram-test-image.jpg")
+def instagram_test_image():
+    image_path = os.path.join(IMAGE_DIR, "instagram-test.jpg")
+
+    if not os.path.exists(image_path):
+        return "instagram-test.jpg が見つかりません。static/images/instagram-test.jpg を配置してください。", 404
+
+    return send_file(
+        image_path,
+        mimetype="image/jpeg",
+        as_attachment=False,
+        download_name="instagram-test.jpg"
+    )
+
+
 @app.route("/instagram-post-test")
 def instagram_post_test():
-    sample_image_url = "https://raw.githubusercontent.com/da1comeon-lab/line-nail-ai/main/static/images/instagram-test.jpg"
+    sample_image_url = f"{BASE_URL}/instagram-test-image.jpg"
     caption = build_instagram_caption(
         "Instagram投稿テストです。\n画像URLとアクセストークンの確認用投稿です。"
     )
