@@ -6,13 +6,22 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from openai import OpenAI
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
+
 import os
 import uuid
 import base64
 import random
 import secrets
-import time
 import requests
+import numpy as np
+import cv2
+
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+except Exception:
+    MEDIAPIPE_AVAILABLE = False
+
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
@@ -29,7 +38,6 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
 GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
-
 
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
@@ -88,7 +96,7 @@ NG_REPLACE = {
 ENDINGS = [
     "ご予約お待ちしております。",
     "ご来店お待ちしております。",
-    "気になる方ぜひお試しください。"
+    "気になる方はぜひお試しください。"
 ]
 
 
@@ -128,12 +136,9 @@ def get_access_token():
     return creds.token
 
 
-
-
 @app.route("/")
 def home():
     return "LINE Nail AI Running"
-
 
 
 @app.route("/google-login")
@@ -302,45 +307,271 @@ def callback():
     return "OK"
 
 
-def crop_square(img):
-    w, h = img.size
-    size = min(w, h)
-    left = (w - size) // 2
-    top = int((h - size) * 0.25)
-    top = max(0, min(top, h - size))
-    return img.crop((left, top, left + size, top + size))
+def clamp(value, minimum, maximum):
+    return max(minimum, min(value, maximum))
+
+
+def make_square_box(x1, y1, x2, y2, w, h, margin_ratio=0.28):
+    bw = x2 - x1
+    bh = y2 - y1
+
+    margin = int(max(bw, bh) * margin_ratio)
+
+    x1 -= margin
+    y1 -= margin
+    x2 += margin
+    y2 += margin
+
+    x1 = clamp(x1, 0, w)
+    y1 = clamp(y1, 0, h)
+    x2 = clamp(x2, 0, w)
+    y2 = clamp(y2, 0, h)
+
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+
+    box_size = int(max(x2 - x1, y2 - y1))
+
+    # 爪が見切れないよう、少し大きめに取る
+    box_size = int(box_size * 1.12)
+
+    # 元画像からはみ出さない範囲で最大化
+    box_size = min(box_size, w, h)
+
+    left = cx - box_size // 2
+    top = cy - box_size // 2
+
+    left = clamp(left, 0, w - box_size)
+    top = clamp(top, 0, h - box_size)
+
+    return left, top, left + box_size, top + box_size
+
+
+def crop_with_mediapipe(rgb):
+    if not MEDIAPIPE_AVAILABLE:
+        return None
+
+    h, w, _ = rgb.shape
+
+    try:
+        mp_hands = mp.solutions.hands
+
+        with mp_hands.Hands(
+            static_image_mode=True,
+            max_num_hands=2,
+            model_complexity=1,
+            min_detection_confidence=0.45
+        ) as hands:
+            result = hands.process(rgb)
+
+        if not result.multi_hand_landmarks:
+            return None
+
+        xs = []
+        ys = []
+
+        for hand_landmarks in result.multi_hand_landmarks:
+            for lm in hand_landmarks.landmark:
+                xs.append(int(lm.x * w))
+                ys.append(int(lm.y * h))
+
+        if not xs or not ys:
+            return None
+
+        x1 = clamp(min(xs), 0, w)
+        y1 = clamp(min(ys), 0, h)
+        x2 = clamp(max(xs), 0, w)
+        y2 = clamp(max(ys), 0, h)
+
+        # 手全体＋爪先が切れないように余白を広めに
+        return make_square_box(x1, y1, x2, y2, w, h, margin_ratio=0.42)
+
+    except Exception as e:
+        print("mediapipe crop error:", e)
+        return None
+
+
+def crop_with_opencv_content(rgb):
+    h, w, _ = rgb.shape
+
+    try:
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+        # 背景が白系でも、手・爪・影・輪郭を拾う
+        saturation = hsv[:, :, 1]
+        value = hsv[:, :, 2]
+
+        mask_saturation = saturation > 22
+        mask_not_white = value < 245
+        edges = cv2.Canny(gray, 50, 130)
+        mask_edges = edges > 0
+
+        mask = (mask_saturation & mask_not_white) | mask_edges
+        mask = mask.astype(np.uint8) * 255
+
+        kernel = np.ones((7, 7), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return None
+
+        # 小さいゴミを除外
+        valid = []
+        image_area = w * h
+
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area > image_area * 0.015:
+                valid.append(c)
+
+        if not valid:
+            return None
+
+        all_points = np.vstack(valid)
+        x, y, bw, bh = cv2.boundingRect(all_points)
+
+        return make_square_box(x, y, x + bw, y + bh, w, h, margin_ratio=0.35)
+
+    except Exception as e:
+        print("opencv content crop error:", e)
+        return None
+
+
+def crop_safe_square(rgb):
+    h, w, _ = rgb.shape
+
+    box = crop_with_mediapipe(rgb)
+
+    if box is None:
+        box = crop_with_opencv_content(rgb)
+
+    if box is None:
+        size = min(w, h)
+        left = (w - size) // 2
+        top = int((h - size) * 0.35)
+        top = clamp(top, 0, h - size)
+        box = (left, top, left + size, top + size)
+
+    left, top, right, bottom = box
+    cropped = rgb[top:bottom, left:right]
+
+    return cropped
+
+
+def compress_highlights(rgb):
+    img = rgb.astype(np.float32)
+
+    # 白飛び部分だけ少し抑える
+    threshold = 238
+    mask = img > threshold
+    img[mask] = threshold + (img[mask] - threshold) * 0.38
+
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def auto_light_correction(rgb):
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+
+    l, a, b = cv2.split(lab)
+
+    mean_l = float(np.mean(l))
+    p95 = float(np.percentile(l, 95))
+    p99 = float(np.percentile(l, 99))
+
+    # 白飛びが強い場合は先に抑える
+    rgb = compress_highlights(rgb)
+
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+
+    # 明るすぎる写真は補正を弱く、暗い写真だけ自然に持ち上げる
+    if mean_l < 132:
+        clip_limit = 1.8
+        brightness_alpha = 1.04
+        brightness_beta = 8
+    elif mean_l < 162:
+        clip_limit = 1.45
+        brightness_alpha = 1.02
+        brightness_beta = 3
+    elif p95 > 238 or p99 > 248:
+        clip_limit = 1.05
+        brightness_alpha = 0.985
+        brightness_beta = -2
+    else:
+        clip_limit = 1.22
+        brightness_alpha = 1.00
+        brightness_beta = 0
+
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    l2 = clahe.apply(l)
+
+    lab2 = cv2.merge((l2, a, b))
+    bgr2 = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+
+    bgr2 = cv2.convertScaleAbs(bgr2, alpha=brightness_alpha, beta=brightness_beta)
+
+    rgb2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB)
+
+    return rgb2
+
+
+def natural_color_adjustment(rgb):
+    pil = Image.fromarray(rgb).convert("RGB")
+
+    # やりすぎない自然補正
+    pil = ImageEnhance.Color(pil).enhance(1.025)
+    pil = ImageEnhance.Contrast(pil).enhance(1.025)
+
+    # 肌や白背景を不自然にしない程度の軽いシャープ
+    pil = ImageEnhance.Sharpness(pil).enhance(1.12)
+
+    # ざらつき軽減
+    soft = pil.filter(ImageFilter.GaussianBlur(radius=0.25))
+    pil = Image.blend(pil, soft, 0.06)
+
+    return np.array(pil)
 
 
 def improve_nail_image(filepath):
-    img = Image.open(filepath).convert("RGB")
-    img = ImageOps.exif_transpose(img)
+    pil = Image.open(filepath).convert("RGB")
+    pil = ImageOps.exif_transpose(pil)
 
-    img = crop_square(img)
-    img = img.resize((1080, 1080), Image.LANCZOS)
+    rgb = np.array(pil)
 
-    img = ImageEnhance.Brightness(img).enhance(1.06)
-    img = ImageEnhance.Contrast(img).enhance(1.04)
+    # 爪・手が見切れにくい安全トリミング
+    rgb = crop_safe_square(rgb)
 
-    r, g, b = img.split()
-    r = r.point(lambda i: min(255, int(i * 0.990)))
-    g = g.point(lambda i: min(255, int(i * 1.002)))
-    b = b.point(lambda i: min(255, int(i * 1.010)))
-    img = Image.merge("RGB", (r, g, b))
+    # 正方形1080px
+    pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
+    rgb = np.array(pil)
 
-    img = ImageEnhance.Color(img).enhance(1.02)
+    # 白飛び防止＋自然な明るさ補正
+    rgb = auto_light_correction(rgb)
 
-    soft = img.filter(ImageFilter.GaussianBlur(radius=0.35))
-    img = Image.blend(img, soft, 0.08)
+    # 色味・質感の自然補正
+    rgb = natural_color_adjustment(rgb)
 
-    img = ImageEnhance.Sharpness(img).enhance(1.18)
-
-    img.save(filepath, "JPEG", quality=95, optimize=True)
+    out = Image.fromarray(rgb).convert("RGB")
+    out.save(filepath, "JPEG", quality=95, optimize=True)
 
 
 def clean_text(text):
     for old, new in NG_REPLACE.items():
         text = text.replace(old, new)
-    return text.strip()
+
+    # 余計な空白を少し整理
+    text = text.replace("。。", "。")
+    text = text.replace("、、", "、")
+    text = text.strip()
+
+    return text
 
 
 def shop_message():
@@ -409,38 +640,57 @@ def handle_image(event):
 
         prompt = f"""
 あなたは実際のネイルサロンスタッフです。
-Hot Pepper BeautyとInstagramに使えるネイル投稿文を作成してください。
+Hot Pepper BeautyのブログとInstagram投稿に使える文章を作成してください。
 
-目標：
-普通のネイリストが書いたような、自然で無難なサロン文章。
+目的：
+AIっぽくない、実際のネイリストが書いたような自然で短いサロン文章にする。
 
 参考文章：
 {GOOD_EXAMPLES}
 
+文章の方向性：
+・丁寧だけど、かしこまりすぎない
+・説明しすぎない
+・写真に写っているデザインだけを書く
+・色、質感、パーツ、雰囲気を自然に説明する
+・お客様に押し売りする感じにしない
+・普通のサロンブログとして違和感のない文章にする
+
 絶対ルール：
 ・絵文字は禁止
+・顔文字は禁止
+・大げさな表現は禁止
 ・変にオシャレに言いすぎない
-・説明しすぎない
-・短めで読みやすく
-・本文は普通のサロン文
-・「おすすめです」は1回まで
+・「おすすめです」は使っても1回まで
 ・「個性」「個性的」は使わない
 ・「洗練」「演出」「魅力」「ワンランク」「映える」「存在感」「ポツポツ」は使わない
-・無理に季節感を入れない
-・画像に写っている内容から外れたことを書かない
+・画像にない内容を想像で書かない
+・季節感は、明らかに季節デザインの時だけ入れる
+・本文は2〜4文
+・1文は長くしすぎない
+・毎回同じ文章パターンにしない
+
+タイトルのルール：
+・20文字前後
+・自然なメニュー名っぽく
+・無理にキャッチコピーにしない
+
+ハッシュタグのルール：
+・5個だけ
+・必ず {shop['area_tag']} を1個入れる
+・その他は画像に合うタグにする
+・関係ないタグは入れない
 
 出力形式は必ずこれ：
 
 【タイトル】
-20文字前後の自然なタイトル
+タイトル
 
 【本文】
-2〜4文。
-画像のデザインを自然に説明。
-最後は「{ending}」で締める。
+本文
+{ending}
 
-ハッシュタグ5個。
-必ず地域タグ {shop['area_tag']} を1個入れる。
+#タグ #タグ #タグ #タグ #タグ
 
 {shop['name']}
 {shop['info']}
@@ -448,7 +698,8 @@ Hot Pepper BeautyとInstagramに使えるネイル投稿文を作成してくだ
 
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
-            temperature=0.32,
+            temperature=0.28,
+            max_tokens=700,
             messages=[
                 {"role": "system", "content": prompt},
                 {
