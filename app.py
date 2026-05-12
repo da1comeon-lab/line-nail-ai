@@ -65,6 +65,14 @@ ENDINGS = [
     "気になる方はぜひお試しください。"
 ]
 
+WRITING_STYLES = [
+    "短めで、普通のサロンブログっぽく。きれいにまとめすぎない。",
+    "少しラフに。実際のネイリストが書いたような自然な文章。",
+    "説明しすぎず、色味とポイントだけをさらっと書く。",
+    "落ち着いた言い方で、押し売り感のない文章。",
+    "お客様に見せる投稿として自然で、少しだけ親しみのある文章。"
+]
+
 NG_REPLACE = {
     "個性的": "少し雰囲気のある",
     "個性": "雰囲気",
@@ -76,6 +84,8 @@ NG_REPLACE = {
     "映える": "きれいに見える",
     "アクセント": "ポイント",
     "上品な": "",
+    "上品": "",
+    "おすすめです。おすすめです。": "おすすめです。",
 }
 
 
@@ -294,15 +304,38 @@ def fit_to_square_no_cut(rgb):
     canvas = np.ones((size, size, 3), dtype=np.uint8) * 255
 
     x = (size - w) // 2
-
-    # 下余白が出すぎないように少し上寄せ
-    y = int((size - h) * 0.35)
-
+    y = int((size - h) * 0.32)
     y = max(0, min(y, size - h))
 
     canvas[y:y+h, x:x+w] = rgb
 
     return canvas
+
+
+def detect_image_type(rgb):
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    h, s, v = cv2.split(hsv)
+
+    skin_mask = (
+        ((h < 25) | (h > 165)) &
+        (s > 25) &
+        (s < 150) &
+        (v > 80)
+    )
+
+    dark_mask = (
+        (v < 70) &
+        (s > 25)
+    )
+
+    total = rgb.shape[0] * rgb.shape[1]
+    skin_ratio = float(np.sum(skin_mask)) / total
+    dark_ratio = float(np.sum(dark_mask)) / total
+
+    is_hand_photo = skin_ratio > 0.10
+    has_black_nail = dark_ratio > 0.035
+
+    return is_hand_photo, has_black_nail
 
 
 def soft_highlight_control(rgb):
@@ -316,53 +349,87 @@ def soft_highlight_control(rgb):
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def auto_light_correction(rgb):
+def protect_dark_tones(rgb):
+    img = rgb.astype(np.float32)
+
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    v = hsv[:, :, 2]
+
+    dark_mask = v < 65
+
+    # 黒ネイルの黒つぶれを少しだけ持ち上げる
+    img[dark_mask] = img[dark_mask] * 1.08 + 3
+
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def auto_light_correction(rgb, is_hand_photo, has_black_nail):
     rgb = soft_highlight_control(rgb)
+
+    if has_black_nail:
+        rgb = protect_dark_tones(rgb)
 
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
 
     l, a, b = cv2.split(lab)
-
     mean_l = float(np.mean(l))
 
-    # シワ強調防止のためCLAHEは暗い写真だけ弱く使用
-    if mean_l < 115:
-        clahe = cv2.createCLAHE(clipLimit=0.7, tileGridSize=(8, 8))
-        l = clahe.apply(l)
+    # 手写真はシワ強調防止で弱め
+    if is_hand_photo:
+        if mean_l < 115:
+            lab = cv2.merge((l, a, b))
+            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            bgr = cv2.convertScaleAbs(bgr, alpha=1.015, beta=3)
+        elif mean_l > 205:
+            lab = cv2.merge((l, a, b))
+            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
+        else:
+            lab = cv2.merge((l, a, b))
+            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
-        lab = cv2.merge((l, a, b))
-        bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        bgr = cv2.convertScaleAbs(bgr, alpha=1.02, beta=3)
-
-    elif mean_l < 145:
-        lab = cv2.merge((l, a, b))
-        bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        bgr = cv2.convertScaleAbs(bgr, alpha=1.01, beta=1)
-
-    elif mean_l > 205:
-        lab = cv2.merge((l, a, b))
-        bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
-
+    # チップ写真は少しだけくっきり
     else:
-        lab = cv2.merge((l, a, b))
-        bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        if mean_l < 120:
+            clahe = cv2.createCLAHE(clipLimit=0.8, tileGridSize=(8, 8))
+            l = clahe.apply(l)
+            lab = cv2.merge((l, a, b))
+            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            bgr = cv2.convertScaleAbs(bgr, alpha=1.025, beta=3)
+        elif mean_l > 210:
+            lab = cv2.merge((l, a, b))
+            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
+        else:
+            lab = cv2.merge((l, a, b))
+            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-def natural_adjustment(rgb):
+def natural_adjustment(rgb, is_hand_photo):
     pil = Image.fromarray(rgb).convert("RGB")
 
-    # 手のシワを強調しない自然補正
-    pil = ImageEnhance.Brightness(pil).enhance(1.00)
-    pil = ImageEnhance.Color(pil).enhance(1.01)
-    pil = ImageEnhance.Contrast(pil).enhance(0.97)
-    pil = ImageEnhance.Sharpness(pil).enhance(0.94)
+    if is_hand_photo:
+        # 手写真：肌のシワを強調しない
+        pil = ImageEnhance.Brightness(pil).enhance(1.00)
+        pil = ImageEnhance.Color(pil).enhance(1.01)
+        pil = ImageEnhance.Contrast(pil).enhance(0.97)
+        pil = ImageEnhance.Sharpness(pil).enhance(0.94)
 
-    soft = pil.filter(ImageFilter.GaussianBlur(radius=0.35))
-    pil = Image.blend(pil, soft, 0.09)
+        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.35))
+        pil = Image.blend(pil, soft, 0.09)
+
+    else:
+        # チップ写真：少しだけくっきり
+        pil = ImageEnhance.Brightness(pil).enhance(1.00)
+        pil = ImageEnhance.Color(pil).enhance(1.025)
+        pil = ImageEnhance.Contrast(pil).enhance(1.015)
+        pil = ImageEnhance.Sharpness(pil).enhance(1.08)
+
+        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.20))
+        pil = Image.blend(pil, soft, 0.03)
 
     return np.array(pil)
 
@@ -373,14 +440,15 @@ def improve_nail_image(filepath):
 
     rgb = np.array(pil)
 
-    # 切り抜かずに正方形化。爪見切れ防止
     rgb = fit_to_square_no_cut(rgb)
 
     pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
     rgb = np.array(pil)
 
-    rgb = auto_light_correction(rgb)
-    rgb = natural_adjustment(rgb)
+    is_hand_photo, has_black_nail = detect_image_type(rgb)
+
+    rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
+    rgb = natural_adjustment(rgb, is_hand_photo)
 
     out = Image.fromarray(rgb).convert("RGB")
 
@@ -470,27 +538,28 @@ def handle_image(event):
             base64_image = base64.b64encode(img.read()).decode("utf-8")
 
         ending = random.choice(ENDINGS)
+        writing_style = random.choice(WRITING_STYLES)
 
         prompt = f"""
 あなたは実際のネイルサロンスタッフです。
 Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 
-文章の方向性：
-・きれいにまとめすぎない
-・少しラフなサロン文章
-・普通のネイリストが書いた感じ
-・短くて読みやすい
-・画像に写っている内容だけを書く
+今回の文章トーン：
+{writing_style}
 
 絶対条件：
 ・AIっぽくしない
 ・絵文字禁止
 ・説明しすぎない
 ・押し売りしない
+・画像に写っている内容だけを書く
 ・タイトルは短め
 ・本文は2〜3文
 ・同じ語尾を繰り返さない
 ・変に高級感を出しすぎない
+・「おすすめです」はなるべく使わない
+・使う場合でも1回まで
+・「気分を変えたい時」「普段使いしやすい」などの自然な言い方はOK
 
 禁止ワード：
 個性的
@@ -500,6 +569,13 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 存在感
 映える
 上品
+
+文章例：
+グリーンとブラウンを合わせたデザインです。
+ゴールドのラインも入れて、少しだけポイントを足しました。
+
+黒フレンチと黒ベースを合わせたデザインです。
+パールも入っているので、重くなりすぎない仕上がりです。
 
 最後は
 「{ending}」
@@ -524,7 +600,7 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
-            temperature=0.28,
+            temperature=0.35,
             max_tokens=600,
             messages=[
                 {
