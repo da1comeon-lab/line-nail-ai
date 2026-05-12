@@ -142,7 +142,7 @@ def publish_to_instagram(image_url, caption):
     if not INSTAGRAM_USER_ID:
         return False, "INSTAGRAM_USER_ID が未設定です。"
 
-    create_url = f"https://graph.facebook.com/v22.0/{INSTAGRAM_USER_ID}/media"
+    create_url = f"https://graph.instagram.com/v22.0/{INSTAGRAM_USER_ID}/media"
 
     create_res = requests.post(
         create_url,
@@ -165,7 +165,7 @@ def publish_to_instagram(image_url, caption):
 
     time.sleep(8)
 
-    publish_url = f"https://graph.facebook.com/v22.0/{INSTAGRAM_USER_ID}/media_publish"
+    publish_url = f"https://graph.instagram.com/v22.0/{INSTAGRAM_USER_ID}/media_publish"
 
     publish_res = requests.post(
         publish_url,
