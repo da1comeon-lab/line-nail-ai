@@ -29,6 +29,8 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
 GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
 
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
 user_shop = {}
@@ -131,6 +133,35 @@ def home():
     return "LINE Nail AI Running"
 
 
+@app.route("/instagram-test")
+def instagram_test():
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return "INSTAGRAM_ACCESS_TOKEN が未設定です。RenderのEnvironmentを確認してください。"
+
+    results = []
+
+    test_urls = [
+        "https://graph.facebook.com/v20.0/me?fields=id,name",
+        "https://graph.facebook.com/v20.0/me/accounts",
+        "https://graph.instagram.com/me?fields=id,username"
+    ]
+
+    for url in test_urls:
+        res = requests.get(
+            url,
+            params={"access_token": INSTAGRAM_ACCESS_TOKEN}
+        )
+
+        results.append(f"""
+        <h3>{url}</h3>
+        <p>status: {res.status_code}</p>
+        <pre>{res.text}</pre>
+        <hr>
+        """)
+
+    return "<h2>Instagram Token Test</h2>" + "".join(results)
+
+
 @app.route("/google-login")
 def google_login():
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
@@ -207,7 +238,6 @@ def google_locations():
             "Accept": "application/json"
         }
 
-        # アカウント一覧取得
         accounts_res = requests.get(
             "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
             headers=headers
@@ -216,8 +246,8 @@ def google_locations():
         if accounts_res.status_code != 200:
             return f"""
             Googleアカウント取得エラー<br>
-            status: {accounts_res.status_code}<br>
-            body: {accounts_res.text}
+            ステータス: {accounts_res.status_code}<br>
+            本文: {accounts_res.text}
             """
 
         accounts = accounts_res.json().get("accounts", [])
