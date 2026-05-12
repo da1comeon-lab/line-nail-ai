@@ -1,4 +1,4 @@
-from flask import Flask, request, send_from_directory, send_file, redirect, session
+from flask import Flask, request, send_from_directory, redirect, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
@@ -30,8 +30,6 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
 GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
 
-INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-INSTAGRAM_USER_ID = os.getenv("INSTAGRAM_USER_ID")
 
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
@@ -130,140 +128,12 @@ def get_access_token():
     return creds.token
 
 
-def build_instagram_caption(text):
-    base_tags = "#ネイル #ネイルデザイン #大阪ネイル #大人ネイル #シンプルネイル"
-    return f"{text}\n\n{base_tags}"
-
-
-def publish_to_instagram(image_url, caption):
-    if not INSTAGRAM_ACCESS_TOKEN:
-        return False, "INSTAGRAM_ACCESS_TOKEN が未設定です。"
-
-    if not INSTAGRAM_USER_ID:
-        return False, "INSTAGRAM_USER_ID が未設定です。"
-
-    create_url = f"https://graph.facebook.com/v22.0/{INSTAGRAM_USER_ID}/media"
-
-    create_res = requests.post(
-        create_url,
-        data={
-            "image_url": image_url,
-            "caption": caption,
-            "access_token": INSTAGRAM_ACCESS_TOKEN
-        },
-        timeout=60
-    )
-
-    if create_res.status_code not in [200, 201]:
-        return False, f"media作成エラー status:{create_res.status_code} body:{create_res.text}"
-
-    creation_id = create_res.json().get("id")
-
-    if not creation_id:
-        return False, f"creation_id が取得できませんでした: {create_res.text}"
-
-    time.sleep(8)
-
-    publish_url = f"https://graph.facebook.com/v22.0/{INSTAGRAM_USER_ID}/media_publish"
-
-    publish_res = requests.post(
-        publish_url,
-        data={
-            "creation_id": creation_id,
-            "access_token": INSTAGRAM_ACCESS_TOKEN
-        },
-        timeout=60
-    )
-
-    if publish_res.status_code not in [200, 201]:
-        return False, f"publishエラー status:{publish_res.status_code} body:{publish_res.text}"
-
-    return True, publish_res.text
 
 
 @app.route("/")
 def home():
     return "LINE Nail AI Running"
 
-
-@app.route("/privacy")
-def privacy():
-    return """
-    <h1>Privacy Policy</h1>
-    <p>This app is used internally by Nail salon Smily / Makana to process salon photos and create social media posts.</p>
-    <p>We do not sell personal data. Access tokens are stored securely as environment variables.</p>
-    <p>Contact: da1.comeon@gmail.com</p>
-    """
-
-
-@app.route("/terms")
-def terms():
-    return """
-    <h1>Terms of Service</h1>
-    <p>This app is an internal business tool for Nail salon Smily / Makana.</p>
-    <p>It is used to assist with photo processing and post creation for official salon accounts.</p>
-    <p>Contact: da1.comeon@gmail.com</p>
-    """
-
-
-@app.route("/instagram-test")
-def instagram_test():
-    if not INSTAGRAM_ACCESS_TOKEN:
-        return "INSTAGRAM_ACCESS_TOKEN が未設定です。RenderのEnvironmentを確認してください。"
-
-    if not INSTAGRAM_USER_ID:
-        return "INSTAGRAM_USER_ID が未設定です。RenderのEnvironmentを確認してください。"
-
-    test_url = f"https://graph.instagram.com/v22.0/{INSTAGRAM_USER_ID}"
-    res = requests.get(
-        test_url,
-        params={
-            "fields": "id,username",
-            "access_token": INSTAGRAM_ACCESS_TOKEN
-        },
-        timeout=30
-    )
-
-    return f"""
-    <h2>Instagram Token Test</h2>
-    <p>status: {res.status_code}</p>
-    <pre>{res.text}</pre>
-    """
-
-
-
-@app.route("/instagram-test-image.jpg")
-def instagram_test_image():
-    image_path = os.path.join(IMAGE_DIR, "instagram-test.jpg")
-
-    if not os.path.exists(image_path):
-        return "instagram-test.jpg が見つかりません。static/images/instagram-test.jpg を配置してください。", 404
-
-    return send_file(
-        image_path,
-        mimetype="image/jpeg",
-        as_attachment=False,
-        download_name="instagram-test.jpg"
-    )
-
-
-@app.route("/instagram-post-test")
-def instagram_post_test():
-    sample_image_url = "https://raw.githubusercontent.com/da1comeon-lab/line-nail-ai/main/static/images/instagram-test.jpg"
-    caption = build_instagram_caption(
-        "Instagram投稿テストです。\n画像URLとアクセストークンの確認用投稿です。"
-    )
-
-    ok, result = publish_to_instagram(sample_image_url, caption)
-
-    return f"""
-    <h2>Instagram Post Test</h2>
-    <p>image_url: {sample_image_url}</p>
-    <p>success: {ok}</p>
-    <pre>{result}</pre>
-    <p>画像条件：static/images/instagram-test.jpg に本物のJPEG画像を置いてください。</p>
-    <p>推奨：1080×1080の正方形JPG。縦長すぎる画像はInstagram側で弾かれることがあります。</p>
-    """
 
 
 @app.route("/google-login")
@@ -594,8 +464,6 @@ Hot Pepper BeautyとInstagramに使えるネイル投稿文を作成してくだ
         text = response.choices[0].message.content
         text = clean_text(text)
 
-        # Instagram自動投稿は「Instagram投稿」とメッセージ送信された時だけ実行
-        # 通常の画像送信では、今まで通り画像＋文章だけ返す
         line_bot_api.reply_message(
             event.reply_token,
             [
