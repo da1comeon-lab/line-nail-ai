@@ -13,8 +13,10 @@ import base64
 import random
 import secrets
 import requests
+import traceback
 import numpy as np
 import cv2
+
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
@@ -23,14 +25,17 @@ line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com")
+BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com").rstrip("/")
 IMAGE_DIR = "static/images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
-GOOGLE_REDIRECT_URI = "https://line-nail-ai.onrender.com/oauth2callback"
+GOOGLE_REDIRECT_URI = os.getenv(
+    "GOOGLE_REDIRECT_URI",
+    "https://line-nail-ai.onrender.com/oauth2callback"
+)
 
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
@@ -117,22 +122,75 @@ def get_google_credentials():
 
 def get_access_token():
     creds = get_google_credentials()
+
     if not creds:
         return None
 
     from google.auth.transport.requests import Request
     creds.refresh(Request())
+
     return creds.token
+
+
+def check_public_image_url(image_url):
+    try:
+        res = requests.get(image_url, timeout=20, stream=True)
+
+        content_type = res.headers.get("Content-Type", "")
+        content_length = res.headers.get("Content-Length", "")
+
+        ok = (
+            res.status_code == 200 and
+            content_type.lower().startswith("image/")
+        )
+
+        return {
+            "ok": ok,
+            "status_code": res.status_code,
+            "content_type": content_type,
+            "content_length": content_length,
+            "message": "画像URLは外部公開されています。" if ok else "画像URLの確認に失敗しました。"
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "status_code": None,
+            "content_type": "",
+            "content_length": "",
+            "message": f"画像URLチェックエラー: {e}"
+        }
 
 
 @app.route("/")
 def home():
-    return "LINE Nail AI Running"
+    return """
+    LINE Nail AI Running<br><br>
+    確認ページ:<br>
+    /google-status<br>
+    /google-login<br>
+    /google-locations<br>
+    """
 
 
 @app.route("/static/images/<filename>")
 def serve_image(filename):
     return send_from_directory(IMAGE_DIR, filename)
+
+
+@app.route("/image-check/<filename>")
+def image_check(filename):
+    image_url = f"{BASE_URL}/static/images/{filename}"
+    result = check_public_image_url(image_url)
+
+    return f"""
+    <h2>画像URLチェック</h2>
+    <p>URL: <a href="{image_url}" target="_blank">{image_url}</a></p>
+    <p>結果: {result["message"]}</p>
+    <p>Status: {result["status_code"]}</p>
+    <p>Content-Type: {result["content_type"]}</p>
+    <p>Content-Length: {result["content_length"]}</p>
+    """
 
 
 @app.route("/callback", methods=["POST"])
@@ -142,19 +200,79 @@ def callback():
 
     try:
         handler.handle(body, signature)
+
     except InvalidSignatureError:
         return "Invalid signature", 400
+
     except Exception as e:
         print("callback error:", e)
+        print(traceback.format_exc())
         return "OK"
 
     return "OK"
 
 
+@app.route("/google-status")
+def google_status():
+    html = "<h2>Google連携 状態確認</h2>"
+
+    html += "<h3>環境変数</h3>"
+    html += "<ul>"
+    html += f"<li>GOOGLE_CLIENT_ID: {'設定あり' if GOOGLE_CLIENT_ID else '未設定'}</li>"
+    html += f"<li>GOOGLE_CLIENT_SECRET: {'設定あり' if GOOGLE_CLIENT_SECRET else '未設定'}</li>"
+    html += f"<li>GOOGLE_REFRESH_TOKEN: {'設定あり' if GOOGLE_REFRESH_TOKEN else '未設定'}</li>"
+    html += f"<li>GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}</li>"
+    html += f"<li>FLASK_SECRET_KEY: {'設定あり' if os.getenv('FLASK_SECRET_KEY') else '未設定'}</li>"
+    html += "</ul>"
+
+    html += "<h3>必要なGoogle Cloud API</h3>"
+    html += """
+    <ul>
+        <li>mybusinessaccountmanagement.googleapis.com</li>
+        <li>mybusinessbusinessinformation.googleapis.com</li>
+    </ul>
+    """
+
+    if not GOOGLE_REFRESH_TOKEN:
+        html += "<p>GOOGLE_REFRESH_TOKEN が未設定です。先に /google-login を開いて連携してください。</p>"
+        return html
+
+    try:
+        token = get_access_token()
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+        }
+
+        accounts_res = requests.get(
+            "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
+            headers=headers,
+            timeout=30
+        )
+
+        html += "<h3>Google Business Profile API確認</h3>"
+        html += f"<p>accounts API status: {accounts_res.status_code}</p>"
+        html += f"<pre>{accounts_res.text}</pre>"
+
+        if accounts_res.status_code == 403:
+            html += """
+            <p>
+            403の場合、Google Business Profile APIの許可Project違い、
+            Quota 0、またはAPI未有効化の可能性があります。
+            </p>
+            """
+
+        return html
+
+    except Exception as e:
+        return html + f"<p>Google確認エラー: {e}</p>"
+
+
 @app.route("/google-login")
 def google_login():
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        return "Googleの環境変数が設定されていません。"
+        return "Googleの環境変数 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET が設定されていません。"
 
     flow = Flow.from_client_config(
         google_client_config(),
@@ -193,13 +311,23 @@ def oauth2callback():
 
         flow.redirect_uri = GOOGLE_REDIRECT_URI
         flow.code_verifier = code_verifier
-        flow.fetch_token(authorization_response=request.url)
+
+        query = request.query_string.decode("utf-8")
+        authorization_response = GOOGLE_REDIRECT_URI
+        if query:
+            authorization_response += "?" + query
+
+        flow.fetch_token(authorization_response=authorization_response)
 
         credentials = flow.credentials
         refresh_token = credentials.refresh_token
 
         if not refresh_token:
-            return "Google連携は成功しましたが、refresh_token が取得できませんでした。もう一度 /google-login を開いて許可し直してください。"
+            return """
+            Google連携は成功しましたが、refresh_token が取得できませんでした。<br>
+            もう一度 /google-login を開いて許可し直してください。<br><br>
+            それでも出ない場合は、Googleアカウント側の連携済みアプリから一度削除して再連携してください。
+            """
 
         return f"""
         Google連携成功<br><br>
@@ -210,6 +338,8 @@ def oauth2callback():
         """
 
     except Exception as e:
+        print("Google oauth error:", e)
+        print(traceback.format_exc())
         return f"Google連携エラー：{e}"
 
 
@@ -219,7 +349,7 @@ def google_locations():
         token = get_access_token()
 
         if not token:
-            return "GOOGLE_REFRESH_TOKEN が設定されていません。"
+            return "GOOGLE_REFRESH_TOKEN が設定されていません。先に /google-login を開いてください。"
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -236,7 +366,11 @@ def google_locations():
             return f"""
             Googleアカウント取得エラー<br>
             ステータス: {accounts_res.status_code}<br>
-            本文: {accounts_res.text}
+            本文: <pre>{accounts_res.text}</pre><br><br>
+            確認項目:<br>
+            ・Google Business Profile APIのProjectがallowlistされているか<br>
+            ・Quotaが0のままではないか<br>
+            ・mybusinessaccountmanagement.googleapis.com が有効か<br>
             """
 
         accounts = accounts_res.json().get("accounts", [])
@@ -261,7 +395,13 @@ def google_locations():
             html += f"<p>locations status: {locations_res.status_code}</p>"
 
             if locations_res.status_code != 200:
-                html += f"<pre>{locations_res.text}</pre>"
+                html += f"""
+                <pre>{locations_res.text}</pre>
+                <p>
+                店舗取得に失敗する場合は、
+                mybusinessbusinessinformation.googleapis.com が有効か確認してください。
+                </p>
+                """
                 continue
 
             locations = locations_res.json().get("locations", [])
@@ -294,6 +434,8 @@ def google_locations():
         return html
 
     except Exception as e:
+        print("Google locations error:", e)
+        print(traceback.format_exc())
         return f"Google店舗取得エラー：{e}"
 
 
@@ -307,7 +449,7 @@ def fit_to_square_no_cut(rgb):
     y = int((size - h) * 0.32)
     y = max(0, min(y, size - h))
 
-    canvas[y:y+h, x:x+w] = rgb
+    canvas[y:y + h, x:x + w] = rgb
 
     return canvas
 
@@ -357,7 +499,6 @@ def protect_dark_tones(rgb):
 
     dark_mask = v < 65
 
-    # 黒ネイルの黒つぶれを少しだけ持ち上げる
     img[dark_mask] = img[dark_mask] * 1.08 + 3
 
     return np.clip(img, 0, 255).astype(np.uint8)
@@ -375,7 +516,6 @@ def auto_light_correction(rgb, is_hand_photo, has_black_nail):
     l, a, b = cv2.split(lab)
     mean_l = float(np.mean(l))
 
-    # 手写真はシワ強調防止で弱め
     if is_hand_photo:
         if mean_l < 115:
             lab = cv2.merge((l, a, b))
@@ -389,7 +529,6 @@ def auto_light_correction(rgb, is_hand_photo, has_black_nail):
             lab = cv2.merge((l, a, b))
             bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
-    # チップ写真は少しだけくっきり
     else:
         if mean_l < 120:
             clahe = cv2.createCLAHE(clipLimit=0.8, tileGridSize=(8, 8))
@@ -412,7 +551,6 @@ def natural_adjustment(rgb, is_hand_photo):
     pil = Image.fromarray(rgb).convert("RGB")
 
     if is_hand_photo:
-        # 手写真：肌のシワを強調しない
         pil = ImageEnhance.Brightness(pil).enhance(1.00)
         pil = ImageEnhance.Color(pil).enhance(1.01)
         pil = ImageEnhance.Contrast(pil).enhance(0.97)
@@ -422,7 +560,6 @@ def natural_adjustment(rgb, is_hand_photo):
         pil = Image.blend(pil, soft, 0.09)
 
     else:
-        # チップ写真：少しだけくっきり
         pil = ImageEnhance.Brightness(pil).enhance(1.00)
         pil = ImageEnhance.Color(pil).enhance(1.025)
         pil = ImageEnhance.Contrast(pil).enhance(1.015)
@@ -440,17 +577,17 @@ def improve_nail_image(filepath):
 
     rgb = np.array(pil)
 
-    rgb = fit_to_square_no_cut(rgb)
-
-    pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
-    rgb = np.array(pil)
-
+    # 白背景を足す前に判定・補正する。余白の白に引っ張られないようにする。
     is_hand_photo, has_black_nail = detect_image_type(rgb)
 
     rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
     rgb = natural_adjustment(rgb, is_hand_photo)
 
-    out = Image.fromarray(rgb).convert("RGB")
+    # 最後に切り抜かず正方形化する。爪の見切れ防止。
+    rgb = fit_to_square_no_cut(rgb)
+
+    pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
+    out = pil.convert("RGB")
 
     out.save(
         filepath,
@@ -509,6 +646,7 @@ def handle_text(event):
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
+    stage = "開始"
 
     if user_id not in user_shop:
         line_bot_api.reply_message(
@@ -521,19 +659,26 @@ def handle_image(event):
     shop = SHOPS[shop_key]
 
     try:
+        stage = "LINE画像取得"
         message_content = line_bot_api.get_message_content(event.message.id)
 
         filename = f"{uuid.uuid4().hex}.jpg"
         filepath = os.path.join(IMAGE_DIR, filename)
 
+        stage = "画像保存"
         with open(filepath, "wb") as f:
             for chunk in message_content.iter_content():
                 f.write(chunk)
 
+        stage = "画像補正"
         improve_nail_image(filepath)
 
         image_url = f"{BASE_URL}/static/images/{filename}"
 
+        stage = "画像URLチェック"
+        image_check_result = check_public_image_url(image_url)
+
+        stage = "画像読み込み"
         with open(filepath, "rb") as img:
             base64_image = base64.b64encode(img.read()).decode("utf-8")
 
@@ -598,6 +743,7 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 {shop['info']}
 """
 
+        stage = "AI文章生成"
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             temperature=0.35,
@@ -628,6 +774,16 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
         text = response.choices[0].message.content
         text = clean_text(text)
 
+        if not image_check_result["ok"]:
+            text += f"""
+
+画像URLチェック:
+{image_check_result["message"]}
+Instagram投稿で失敗する場合は、このURLが外部から見られるか確認してください。
+{image_url}
+"""
+
+        stage = "LINE返信"
         line_bot_api.reply_message(
             event.reply_token,
             [
@@ -640,12 +796,20 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
         )
 
     except Exception as e:
+        print("image error stage:", stage)
         print("image error:", e)
+        print(traceback.format_exc())
 
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text="エラーが出ました。もう一度画像を送ってください。"
+                text=f"""エラーが出ました。
+
+止まった場所:
+{stage}
+
+もう一度画像を送ってください。
+何度も出る場合は、RenderのLogsを確認してください。"""
             )
         )
 
