@@ -624,8 +624,6 @@ def handle_image(event):
         stage = "画像補正"
         improve_nail_image(filepath)
 
-        image_url = f"{BASE_URL}/static/images/{filename}"
-
         stage = "画像読み込み"
         with open(filepath, "rb") as img:
             base64_image = base64.b64encode(img.read()).decode("utf-8")
@@ -679,9 +677,7 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 
 出力形式：
 
-
 タイトル
-
 
 本文
 
@@ -722,13 +718,8 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
         text = response.choices[0].message.content
         text = clean_text(text)
 
-        result_text = f"""{text}
-
-加工画像URL:
-{image_url}"""
-
         stage = "LINE push送信"
-        safe_push_text(user_id, result_text)
+        safe_push_text(user_id, text)
 
     except Exception as e:
         print("image error stage:", stage)
