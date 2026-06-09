@@ -132,36 +132,6 @@ def get_access_token():
     return creds.token
 
 
-def check_public_image_url(image_url):
-    try:
-        res = requests.get(image_url, timeout=20, stream=True)
-
-        content_type = res.headers.get("Content-Type", "")
-        content_length = res.headers.get("Content-Length", "")
-
-        ok = (
-            res.status_code == 200 and
-            content_type.lower().startswith("image/")
-        )
-
-        return {
-            "ok": ok,
-            "status_code": res.status_code,
-            "content_type": content_type,
-            "content_length": content_length,
-            "message": "画像URLは外部公開されています。" if ok else "画像URLの確認に失敗しました。"
-        }
-
-    except Exception as e:
-        return {
-            "ok": False,
-            "status_code": None,
-            "content_type": "",
-            "content_length": "",
-            "message": f"画像URLチェックエラー: {e}"
-        }
-
-
 @app.route("/")
 def home():
     return """
@@ -176,21 +146,6 @@ def home():
 @app.route("/static/images/<filename>")
 def serve_image(filename):
     return send_from_directory(IMAGE_DIR, filename)
-
-
-@app.route("/image-check/<filename>")
-def image_check(filename):
-    image_url = f"{BASE_URL}/static/images/{filename}"
-    result = check_public_image_url(image_url)
-
-    return f"""
-    <h2>画像URLチェック</h2>
-    <p>URL: <a href="{image_url}" target="_blank">{image_url}</a></p>
-    <p>結果: {result["message"]}</p>
-    <p>Status: {result["status_code"]}</p>
-    <p>Content-Type: {result["content_type"]}</p>
-    <p>Content-Length: {result["content_length"]}</p>
-    """
 
 
 @app.route("/callback", methods=["POST"])
@@ -254,14 +209,6 @@ def google_status():
         html += "<h3>Google Business Profile API確認</h3>"
         html += f"<p>accounts API status: {accounts_res.status_code}</p>"
         html += f"<pre>{accounts_res.text}</pre>"
-
-        if accounts_res.status_code == 403:
-            html += """
-            <p>
-            403の場合、Google Business Profile APIの許可Project違い、
-            Quota 0、またはAPI未有効化の可能性があります。
-            </p>
-            """
 
         return html
 
@@ -366,11 +313,7 @@ def google_locations():
             return f"""
             Googleアカウント取得エラー<br>
             ステータス: {accounts_res.status_code}<br>
-            本文: <pre>{accounts_res.text}</pre><br><br>
-            確認項目:<br>
-            ・Google Business Profile APIのProjectがallowlistされているか<br>
-            ・Quotaが0のままではないか<br>
-            ・mybusinessaccountmanagement.googleapis.com が有効か<br>
+            本文: <pre>{accounts_res.text}</pre>
             """
 
         accounts = accounts_res.json().get("accounts", [])
@@ -395,13 +338,7 @@ def google_locations():
             html += f"<p>locations status: {locations_res.status_code}</p>"
 
             if locations_res.status_code != 200:
-                html += f"""
-                <pre>{locations_res.text}</pre>
-                <p>
-                店舗取得に失敗する場合は、
-                mybusinessbusinessinformation.googleapis.com が有効か確認してください。
-                </p>
-                """
+                html += f"<pre>{locations_res.text}</pre>"
                 continue
 
             locations = locations_res.json().get("locations", [])
@@ -595,25 +532,6 @@ def improve_nail_image(filepath):
     )
 
 
-def create_line_preview_image(original_path, preview_path):
-    img = Image.open(original_path).convert("RGB")
-    img = ImageOps.exif_transpose(img)
-
-    img.thumbnail((600, 600), Image.LANCZOS)
-
-    canvas = Image.new("RGB", (600, 600), (255, 255, 255))
-    x = (600 - img.width) // 2
-    y = (600 - img.height) // 2
-    canvas.paste(img, (x, y))
-
-    canvas.save(
-        preview_path,
-        "JPEG",
-        quality=85,
-        optimize=True
-    )
-
-
 def clean_text(text):
     for old, new in NG_REPLACE.items():
         text = text.replace(old, new)
@@ -635,6 +553,17 @@ def shop_message():
 
 設定後にネイル画像を送ると、
 画像加工＋ブログ文章を自動作成します。"""
+
+
+def safe_push_text(user_id, text):
+    try:
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=text)
+        )
+    except Exception as e:
+        print("push message error:", e)
+        print(traceback.format_exc())
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -675,16 +604,17 @@ def handle_image(event):
     shop_key = user_shop[user_id]
     shop = SHOPS[shop_key]
 
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text="画像を受け取りました。加工と文章作成をしています。少しお待ちください。")
+    )
+
     try:
         stage = "LINE画像取得"
         message_content = line_bot_api.get_message_content(event.message.id)
 
-        image_id = uuid.uuid4().hex
-        filename = f"{image_id}.jpg"
-        preview_filename = f"preview_{image_id}.jpg"
-
+        filename = f"{uuid.uuid4().hex}.jpg"
         filepath = os.path.join(IMAGE_DIR, filename)
-        preview_path = os.path.join(IMAGE_DIR, preview_filename)
 
         stage = "画像保存"
         with open(filepath, "wb") as f:
@@ -694,15 +624,7 @@ def handle_image(event):
         stage = "画像補正"
         improve_nail_image(filepath)
 
-        stage = "LINEプレビュー作成"
-        create_line_preview_image(filepath, preview_path)
-
         image_url = f"{BASE_URL}/static/images/{filename}"
-        preview_url = f"{BASE_URL}/static/images/{preview_filename}"
-
-        stage = "画像URLチェック"
-        image_check_result = check_public_image_url(image_url)
-        preview_check_result = check_public_image_url(preview_url)
 
         stage = "画像読み込み"
         with open(filepath, "rb") as img:
@@ -757,10 +679,10 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 
 出力形式：
 
-【タイトル】
+
 タイトル
 
-【本文】
+
 本文
 
 #タグ #タグ #タグ #タグ #タグ
@@ -800,54 +722,31 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
         text = response.choices[0].message.content
         text = clean_text(text)
 
-        text += f"""
+        result_text = f"""{text}
 
 加工画像URL:
-{image_url}
-"""
+{image_url}"""
 
-        if not image_check_result["ok"]:
-            text += f"""
-
-画像URLチェック:
-{image_check_result["message"]}
-"""
-
-        if not preview_check_result["ok"]:
-            text += f"""
-
-プレビュー画像URLチェック:
-{preview_check_result["message"]}
-"""
-
-        stage = "LINE返信"
-        line_bot_api.reply_message(
-            event.reply_token,
-            [
-                ImageSendMessage(
-                    original_content_url=image_url,
-                    preview_image_url=preview_url
-                ),
-                TextSendMessage(text=text)
-            ]
-        )
+        stage = "LINE push送信"
+        safe_push_text(user_id, result_text)
 
     except Exception as e:
         print("image error stage:", stage)
         print("image error:", e)
         print(traceback.format_exc())
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(
-                text=f"""エラーが出ました。
+        safe_push_text(
+            user_id,
+            f"""エラーが出ました。
 
 止まった場所:
 {stage}
 
+内容:
+{e}
+
 もう一度画像を送ってください。
 何度も出る場合は、RenderのLogsを確認してください。"""
-            )
         )
 
 
