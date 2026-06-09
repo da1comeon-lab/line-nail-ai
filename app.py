@@ -532,6 +532,25 @@ def improve_nail_image(filepath):
     )
 
 
+def create_line_preview_image(original_path, preview_path):
+    img = Image.open(original_path).convert("RGB")
+    img = ImageOps.exif_transpose(img)
+
+    img.thumbnail((600, 600), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (600, 600), (255, 255, 255))
+    x = (600 - img.width) // 2
+    y = (600 - img.height) // 2
+    canvas.paste(img, (x, y))
+
+    canvas.save(
+        preview_path,
+        "JPEG",
+        quality=85,
+        optimize=True
+    )
+
+
 def clean_text(text):
     for old, new in NG_REPLACE.items():
         text = text.replace(old, new)
@@ -561,9 +580,29 @@ def safe_push_text(user_id, text):
             user_id,
             TextSendMessage(text=text)
         )
+        return True
+
     except Exception as e:
-        print("push message error:", e)
+        print("push text error:", e)
         print(traceback.format_exc())
+        return False
+
+
+def safe_push_image(user_id, image_url, preview_url):
+    try:
+        line_bot_api.push_message(
+            user_id,
+            ImageSendMessage(
+                original_content_url=image_url,
+                preview_image_url=preview_url
+            )
+        )
+        return True
+
+    except Exception as e:
+        print("push image error:", e)
+        print(traceback.format_exc())
+        return False
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -613,8 +652,12 @@ def handle_image(event):
         stage = "LINE画像取得"
         message_content = line_bot_api.get_message_content(event.message.id)
 
-        filename = f"{uuid.uuid4().hex}.jpg"
+        image_id = uuid.uuid4().hex
+        filename = f"{image_id}.jpg"
+        preview_filename = f"preview_{image_id}.jpg"
+
         filepath = os.path.join(IMAGE_DIR, filename)
+        preview_path = os.path.join(IMAGE_DIR, preview_filename)
 
         stage = "画像保存"
         with open(filepath, "wb") as f:
@@ -623,6 +666,15 @@ def handle_image(event):
 
         stage = "画像補正"
         improve_nail_image(filepath)
+
+        stage = "LINEプレビュー作成"
+        create_line_preview_image(filepath, preview_path)
+
+        image_url = f"{BASE_URL}/static/images/{filename}"
+        preview_url = f"{BASE_URL}/static/images/{preview_filename}"
+
+        stage = "画像push送信"
+        image_sent = safe_push_image(user_id, image_url, preview_url)
 
         stage = "画像読み込み"
         with open(filepath, "rb") as img:
@@ -718,7 +770,13 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
         text = response.choices[0].message.content
         text = clean_text(text)
 
-        stage = "LINE push送信"
+        if not image_sent:
+            text = f"""画像送信だけ失敗しました。
+ブログ文章は下に送ります。
+
+{text}"""
+
+        stage = "LINE文章push送信"
         safe_push_text(user_id, text)
 
     except Exception as e:
