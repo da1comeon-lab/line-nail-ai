@@ -41,6 +41,8 @@ GOOGLE_REDIRECT_URI = os.getenv(
 
 INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
 INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+META_APP_ID = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID")
+META_APP_SECRET = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET")
 
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
@@ -175,6 +177,7 @@ def home():
     LINE Nail AI Running<br><br>
     確認ページ:<br>
     /instagram-status<br>
+    /instagram-token-exchange<br>
     /latest-image<br>
     /instagram-test-post<br>
     /google-status<br>
@@ -270,6 +273,69 @@ INSTAGRAM_ACCESS_TOKEN
         print("Instagram status error:", e)
         print(traceback.format_exc())
         return html + f"<p>Instagram確認エラー: {e}</p>"
+
+
+@app.route("/instagram-token-exchange")
+def instagram_token_exchange():
+    html = "<h2>Instagram long token exchange</h2>"
+
+    html += "<h3>Environment</h3>"
+    html += "<ul>"
+    html += f"<li>META_APP_ID: {'set' if META_APP_ID else 'missing'}</li>"
+    html += f"<li>META_APP_SECRET: {'set' if META_APP_SECRET else 'missing'}</li>"
+    html += f"<li>INSTAGRAM_ACCESS_TOKEN: {'set' if INSTAGRAM_ACCESS_TOKEN else 'missing'}</li>"
+    html += "</ul>"
+
+    if not META_APP_ID or not META_APP_SECRET or not INSTAGRAM_ACCESS_TOKEN:
+        html += """
+        <p>Missing environment variables.</p>
+        <p>Add these to Render Environment:</p>
+        <pre>
+META_APP_ID
+META_APP_SECRET
+INSTAGRAM_ACCESS_TOKEN
+        </pre>
+        <p>INSTAGRAM_ACCESS_TOKEN must be a fresh short-lived token from Graph API Explorer.</p>
+        """
+        return html
+
+    try:
+        res = requests.get(
+            "https://graph.facebook.com/v25.0/oauth/access_token",
+            params={
+                "grant_type": "fb_exchange_token",
+                "client_id": META_APP_ID,
+                "client_secret": META_APP_SECRET,
+                "fb_exchange_token": INSTAGRAM_ACCESS_TOKEN
+            },
+            timeout=30
+        )
+
+        html += "<h3>Result</h3>"
+        html += f"<p>Status: {res.status_code}</p>"
+        html += f"<pre>{res.text}</pre>"
+
+        if res.status_code != 200:
+            html += """
+            <p>Exchange failed.</p>
+            <p>If the token is expired, create a fresh short-lived token in Graph API Explorer and update INSTAGRAM_ACCESS_TOKEN first.</p>
+            """
+            return html
+
+        data = res.json()
+        long_token = data.get("access_token", "")
+        expires_in = data.get("expires_in", "")
+
+        html += "<h3>Put this into Render</h3>"
+        html += "<p>Replace INSTAGRAM_ACCESS_TOKEN with this access_token, then redeploy Render.</p>"
+        html += f"<p>expires_in: {expires_in}</p>"
+        html += f"<textarea style='width:100%;height:160px;'>{long_token}</textarea>"
+        html += "<p>After redeploy, open /instagram-status.</p>"
+
+        return html
+
+    except Exception as e:
+        return f"Instagram long token exchange error: {e}"
 
 
 @app.route("/latest-image")
