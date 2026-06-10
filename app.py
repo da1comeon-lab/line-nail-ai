@@ -71,11 +71,11 @@ ENDINGS = [
 ]
 
 WRITING_STYLES = [
-    "短めで、普通のサロンブログっぽく。きれいにまとめすぎない。",
-    "少しラフに。実際のネイリストが書いたような自然な文章。",
-    "説明しすぎず、色味とポイントだけをさらっと書く。",
-    "落ち着いた言い方で、押し売り感のない文章。",
-    "お客様に見せる投稿として自然で、少しだけ親しみのある文章。"
+    "ネイリストがそのまま投稿したような、短く自然な文章。",
+    "少しラフで、説明しすぎないサロンブログ風。",
+    "色味と雰囲気だけをさらっと書く文章。",
+    "落ち着いた言い方で、押し売り感を出さない文章。",
+    "きれいにまとめすぎず、日常の投稿っぽい文章。"
 ]
 
 NG_REPLACE = {
@@ -90,6 +90,7 @@ NG_REPLACE = {
     "アクセント": "ポイント",
     "上品な": "",
     "上品": "",
+    "ちょうどいいです": "合わせやすい仕上がりです",
     "おすすめです。おすすめです。": "おすすめです。",
 }
 
@@ -128,7 +129,6 @@ def get_access_token():
 
     from google.auth.transport.requests import Request
     creds.refresh(Request())
-
     return creds.token
 
 
@@ -155,10 +155,8 @@ def callback():
 
     try:
         handler.handle(body, signature)
-
     except InvalidSignatureError:
         return "Invalid signature", 400
-
     except Exception as e:
         print("callback error:", e)
         print(traceback.format_exc())
@@ -170,7 +168,6 @@ def callback():
 @app.route("/google-status")
 def google_status():
     html = "<h2>Google連携 状態確認</h2>"
-
     html += "<h3>環境変数</h3>"
     html += "<ul>"
     html += f"<li>GOOGLE_CLIENT_ID: {'設定あり' if GOOGLE_CLIENT_ID else '未設定'}</li>"
@@ -180,21 +177,12 @@ def google_status():
     html += f"<li>FLASK_SECRET_KEY: {'設定あり' if os.getenv('FLASK_SECRET_KEY') else '未設定'}</li>"
     html += "</ul>"
 
-    html += "<h3>必要なGoogle Cloud API</h3>"
-    html += """
-    <ul>
-        <li>mybusinessaccountmanagement.googleapis.com</li>
-        <li>mybusinessbusinessinformation.googleapis.com</li>
-    </ul>
-    """
-
     if not GOOGLE_REFRESH_TOKEN:
         html += "<p>GOOGLE_REFRESH_TOKEN が未設定です。先に /google-login を開いて連携してください。</p>"
         return html
 
     try:
         token = get_access_token()
-
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json"
@@ -209,7 +197,6 @@ def google_status():
         html += "<h3>Google Business Profile API確認</h3>"
         html += f"<p>accounts API status: {accounts_res.status_code}</p>"
         html += f"<pre>{accounts_res.text}</pre>"
-
         return html
 
     except Exception as e:
@@ -376,19 +363,18 @@ def google_locations():
         return f"Google店舗取得エラー：{e}"
 
 
-def fit_to_square_no_cut(rgb):
+def resize_keep_aspect(rgb, max_side=1280):
     h, w, _ = rgb.shape
-    size = max(w, h)
+    long_side = max(h, w)
 
-    canvas = np.ones((size, size, 3), dtype=np.uint8) * 255
+    if long_side <= max_side:
+        return rgb
 
-    x = (size - w) // 2
-    y = int((size - h) * 0.32)
-    y = max(0, min(y, size - h))
+    scale = max_side / long_side
+    new_w = int(w * scale)
+    new_h = int(h * scale)
 
-    canvas[y:y + h, x:x + w] = rgb
-
-    return canvas
+    return cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 def detect_image_type(rgb):
@@ -397,33 +383,46 @@ def detect_image_type(rgb):
 
     skin_mask = (
         ((h < 25) | (h > 165)) &
-        (s > 25) &
-        (s < 150) &
-        (v > 80)
+        (s > 20) &
+        (s < 155) &
+        (v > 70)
     )
 
     dark_mask = (
-        (v < 70) &
-        (s > 25)
+        (v < 75) &
+        (s > 20)
     )
 
     total = rgb.shape[0] * rgb.shape[1]
     skin_ratio = float(np.sum(skin_mask)) / total
     dark_ratio = float(np.sum(dark_mask)) / total
 
-    is_hand_photo = skin_ratio > 0.10
-    has_black_nail = dark_ratio > 0.035
+    is_hand_photo = skin_ratio > 0.08
+    has_black_nail = dark_ratio > 0.03
 
     return is_hand_photo, has_black_nail
+
+
+def gray_world_balance(rgb, strength=0.22):
+    img = rgb.astype(np.float32)
+
+    means = np.mean(img.reshape(-1, 3), axis=0)
+    gray = np.mean(means)
+
+    scale = gray / np.maximum(means, 1)
+    scale = 1 + (scale - 1) * strength
+
+    img = img * scale
+
+    return np.clip(img, 0, 255).astype(np.uint8)
 
 
 def soft_highlight_control(rgb):
     img = rgb.astype(np.float32)
 
-    threshold = 245
+    threshold = 238
     mask = img > threshold
-
-    img[mask] = threshold + (img[mask] - threshold) * 0.45
+    img[mask] = threshold + (img[mask] - threshold) * 0.35
 
     return np.clip(img, 0, 255).astype(np.uint8)
 
@@ -435,13 +434,13 @@ def protect_dark_tones(rgb):
     v = hsv[:, :, 2]
 
     dark_mask = v < 65
-
-    img[dark_mask] = img[dark_mask] * 1.08 + 3
+    img[dark_mask] = img[dark_mask] * 1.06 + 4
 
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
 def auto_light_correction(rgb, is_hand_photo, has_black_nail):
+    rgb = gray_world_balance(rgb)
     rgb = soft_highlight_control(rgb)
 
     if has_black_nail:
@@ -449,37 +448,29 @@ def auto_light_correction(rgb, is_hand_photo, has_black_nail):
 
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-
     l, a, b = cv2.split(lab)
+
     mean_l = float(np.mean(l))
 
-    if is_hand_photo:
-        if mean_l < 115:
-            lab = cv2.merge((l, a, b))
-            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-            bgr = cv2.convertScaleAbs(bgr, alpha=1.015, beta=3)
-        elif mean_l > 205:
-            lab = cv2.merge((l, a, b))
-            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-            bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
-        else:
-            lab = cv2.merge((l, a, b))
-            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    if mean_l < 105:
+        gamma = 0.92
+        table = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
+        bgr = cv2.LUT(bgr, table)
+
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        clahe = cv2.createCLAHE(clipLimit=0.55, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+
+    elif mean_l > 198:
+        l = cv2.convertScaleAbs(l, alpha=0.985, beta=-3)
 
     else:
-        if mean_l < 120:
-            clahe = cv2.createCLAHE(clipLimit=0.8, tileGridSize=(8, 8))
-            l = clahe.apply(l)
-            lab = cv2.merge((l, a, b))
-            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-            bgr = cv2.convertScaleAbs(bgr, alpha=1.025, beta=3)
-        elif mean_l > 210:
-            lab = cv2.merge((l, a, b))
-            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-            bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
-        else:
-            lab = cv2.merge((l, a, b))
-            bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        l = cv2.convertScaleAbs(l, alpha=1.01, beta=1)
+
+    lab = cv2.merge((l, a, b))
+    bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
@@ -488,22 +479,22 @@ def natural_adjustment(rgb, is_hand_photo):
     pil = Image.fromarray(rgb).convert("RGB")
 
     if is_hand_photo:
-        pil = ImageEnhance.Brightness(pil).enhance(1.00)
-        pil = ImageEnhance.Color(pil).enhance(1.01)
-        pil = ImageEnhance.Contrast(pil).enhance(0.97)
-        pil = ImageEnhance.Sharpness(pil).enhance(0.94)
+        pil = ImageEnhance.Brightness(pil).enhance(1.01)
+        pil = ImageEnhance.Color(pil).enhance(1.045)
+        pil = ImageEnhance.Contrast(pil).enhance(1.025)
+        pil = ImageEnhance.Sharpness(pil).enhance(1.06)
 
-        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.35))
-        pil = Image.blend(pil, soft, 0.09)
+        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.25))
+        pil = Image.blend(pil, soft, 0.035)
 
     else:
-        pil = ImageEnhance.Brightness(pil).enhance(1.00)
-        pil = ImageEnhance.Color(pil).enhance(1.025)
-        pil = ImageEnhance.Contrast(pil).enhance(1.015)
-        pil = ImageEnhance.Sharpness(pil).enhance(1.08)
+        pil = ImageEnhance.Brightness(pil).enhance(1.01)
+        pil = ImageEnhance.Color(pil).enhance(1.06)
+        pil = ImageEnhance.Contrast(pil).enhance(1.045)
+        pil = ImageEnhance.Sharpness(pil).enhance(1.12)
 
-        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.20))
-        pil = Image.blend(pil, soft, 0.03)
+        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.18))
+        pil = Image.blend(pil, soft, 0.02)
 
     return np.array(pil)
 
@@ -519,15 +510,14 @@ def improve_nail_image(filepath):
     rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
     rgb = natural_adjustment(rgb, is_hand_photo)
 
-    rgb = fit_to_square_no_cut(rgb)
+    # 正方形化しない。元画像の縦横比のまま、長辺だけ整える。
+    rgb = resize_keep_aspect(rgb, max_side=1280)
 
-    pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
-    out = pil.convert("RGB")
-
+    out = Image.fromarray(rgb).convert("RGB")
     out.save(
         filepath,
         "JPEG",
-        quality=95,
+        quality=94,
         optimize=True
     )
 
@@ -536,14 +526,10 @@ def create_line_preview_image(original_path, preview_path):
     img = Image.open(original_path).convert("RGB")
     img = ImageOps.exif_transpose(img)
 
+    # プレビューも正方形にしない。元の形のまま小さくする。
     img.thumbnail((600, 600), Image.LANCZOS)
 
-    canvas = Image.new("RGB", (600, 600), (255, 255, 255))
-    x = (600 - img.width) // 2
-    y = (600 - img.height) // 2
-    canvas.paste(img, (x, y))
-
-    canvas.save(
+    img.save(
         preview_path,
         "JPEG",
         quality=85,
@@ -581,7 +567,6 @@ def safe_push_text(user_id, text):
             TextSendMessage(text=text)
         )
         return True
-
     except Exception as e:
         print("push text error:", e)
         print(traceback.format_exc())
@@ -598,7 +583,6 @@ def safe_push_image(user_id, image_url, preview_url):
             )
         )
         return True
-
     except Exception as e:
         print("push image error:", e)
         print(traceback.format_exc())
@@ -684,25 +668,23 @@ def handle_image(event):
         writing_style = random.choice(WRITING_STYLES)
 
         prompt = f"""
-あなたは実際のネイルサロンスタッフです。
-Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
+あなたはネイルサロンのスタッフです。
+Hot Pepper Beautyに載せる、自然なネイル投稿文を作ってください。
 
 今回の文章トーン：
 {writing_style}
 
-絶対条件：
-・AIっぽくしない
-・絵文字禁止
-・説明しすぎない
-・押し売りしない
+大事な方針：
+・AIっぽい説明文にしない
+・実際のサロンスタッフが短く書いた感じにする
 ・画像に写っている内容だけを書く
-・タイトルは短め
-・本文は2〜3文
-・同じ語尾を繰り返さない
-・変に高級感を出しすぎない
-・「おすすめです」はなるべく使わない
-・使う場合でも1回まで
-・「気分を変えたい時」「普段使いしやすい」などの自然な言い方はOK
+・文章をきれいに整えすぎない
+・一文を長くしすぎない
+・「片手は」「もう片手は」をなるべく使わない
+・「ちょうどいいです」を使わない
+・同じ語尾を続けない
+・押し売りしない
+・絵文字は禁止
 
 禁止ワード：
 個性的
@@ -713,12 +695,12 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
 映える
 上品
 
-文章例：
-グリーンとブラウンを合わせたデザインです。
-ゴールドのラインも入れて、少しだけポイントを足しました。
+文章の感じ：
+オレンジ系のカラーに、シルバーのきらっとしたデザインを合わせました。
+左右で雰囲気を変えて、少し遊びのある仕上がりです。
 
-黒フレンチと黒ベースを合わせたデザインです。
-パールも入っているので、重くなりすぎない仕上がりです。
+淡いカラーに細めのラインを入れたデザインです。
+派手すぎず、手元がすっきり見えます。
 
 最後は
 「{ending}」
@@ -742,7 +724,7 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
         stage = "AI文章生成"
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
-            temperature=0.35,
+            temperature=0.55,
             max_tokens=600,
             messages=[
                 {
@@ -754,7 +736,7 @@ Hot Pepper Beauty用の自然なネイル投稿文を作成してください。
                     "content": [
                         {
                             "type": "text",
-                            "text": "このネイル画像の投稿文を作成してください。"
+                            "text": "このネイル画像を見て、自然な投稿文を作成してください。"
                         },
                         {
                             "type": "image_url",
