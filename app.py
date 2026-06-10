@@ -312,6 +312,9 @@ def instagram_test_post():
     if not image_url:
         return "投稿する画像URLがありません。先にLINEで画像を送るか、?image_url=画像URL を付けてください。"
 
+    if "/static/images/" in image_url:
+        image_url = image_url.replace("/static/images/", "/instagram/images/")
+
     caption = request.args.get("caption") or "Instagram API連携テスト投稿です。\nSmily AI Postから投稿しています。"
 
     if confirm != "1":
@@ -334,7 +337,7 @@ def instagram_test_post():
     try:
         create_res = requests.post(
             f"https://graph.facebook.com/v25.0/{INSTAGRAM_ACCOUNT_ID}/media",
-            params={
+            data={
                 "image_url": image_url,
                 "caption": caption,
                 "access_token": INSTAGRAM_ACCESS_TOKEN
