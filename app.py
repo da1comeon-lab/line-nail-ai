@@ -6,6 +6,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from openai import OpenAI
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
+from urllib.parse import urlencode
 
 import os
 import uuid
@@ -136,11 +137,12 @@ def get_access_token():
     return creds.token
 
 
-def save_latest_image(image_url, preview_url):
+def save_latest_image(image_url, preview_url, instagram_image_url=None):
     try:
         with open(LATEST_IMAGE_FILE, "w", encoding="utf-8") as f:
             f.write(image_url + "\n")
             f.write(preview_url + "\n")
+            f.write((instagram_image_url or image_url) + "\n")
     except Exception as e:
         print("save latest image error:", e)
 
@@ -155,11 +157,16 @@ def read_latest_image():
 
         image_url = lines[0] if len(lines) > 0 else None
         preview_url = lines[1] if len(lines) > 1 else None
-        return image_url, preview_url
+        instagram_image_url = lines[2] if len(lines) > 2 else None
+
+        if not instagram_image_url and image_url:
+            instagram_image_url = image_url.replace("/static/images/", "/instagram/images/")
+
+        return image_url, preview_url, instagram_image_url
 
     except Exception as e:
         print("read latest image error:", e)
-        return None, None
+        return None, None, None
 
 
 @app.route("/")
@@ -179,6 +186,20 @@ def home():
 @app.route("/static/images/<filename>")
 def serve_image(filename):
     return send_from_directory(IMAGE_DIR, filename)
+
+
+@app.route("/instagram/images/<filename>")
+def serve_instagram_image(filename):
+    response = send_from_directory(
+        IMAGE_DIR,
+        filename,
+        mimetype="image/jpeg",
+        as_attachment=False,
+        max_age=3600
+    )
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @app.route("/callback", methods=["POST"])
@@ -253,7 +274,7 @@ INSTAGRAM_ACCESS_TOKEN
 
 @app.route("/latest-image")
 def latest_image():
-    image_url, preview_url = read_latest_image()
+    image_url, preview_url, instagram_image_url = read_latest_image()
 
     html = "<h2>最後に処理した画像</h2>"
 
@@ -261,11 +282,14 @@ def latest_image():
         html += "<p>まだ画像がありません。先にLINEで画像を送ってください。</p>"
         return html
 
-    test_url = f"/instagram-test-post?image_url={image_url}"
+    instagram_image_url = instagram_image_url or image_url
+    test_url = "/instagram-test-post?" + urlencode({"image_url": instagram_image_url})
 
     html += f"<p>image_url:</p><pre>{image_url}</pre>"
     html += f"<p>preview_url:</p><pre>{preview_url if preview_url else ''}</pre>"
+    html += f"<p>instagram_image_url:</p><pre>{instagram_image_url}</pre>"
     html += f'<p><a href="{image_url}" target="_blank">画像を開く</a></p>'
+    html += f'<p><a href="{instagram_image_url}" target="_blank">Instagram用画像URLを開く</a></p>'
     html += f'<p><img src="{image_url}" style="max-width:360px;height:auto;border:1px solid #ddd;"></p>'
     html += "<h3>Instagramテスト投稿</h3>"
     html += "<p>下のリンクを開いても、まだ投稿はされません。確認画面が出ます。</p>"
@@ -283,7 +307,7 @@ def instagram_test_post():
     confirm = request.args.get("confirm")
 
     if not image_url:
-        image_url, _ = read_latest_image()
+        _, _, image_url = read_latest_image()
 
     if not image_url:
         return "投稿する画像URLがありません。先にLINEで画像を送るか、?image_url=画像URL を付けてください。"
@@ -291,7 +315,10 @@ def instagram_test_post():
     caption = request.args.get("caption") or "Instagram API連携テスト投稿です。\nSmily AI Postから投稿しています。"
 
     if confirm != "1":
-        confirmed_url = f"/instagram-test-post?confirm=1&image_url={image_url}"
+        confirmed_url = "/instagram-test-post?" + urlencode({
+            "confirm": "1",
+            "image_url": image_url
+        })
         return f"""
         <h2>Instagramテスト投稿 確認</h2>
         <p>この画面ではまだ投稿していません。</p>
@@ -307,7 +334,7 @@ def instagram_test_post():
     try:
         create_res = requests.post(
             f"https://graph.facebook.com/v25.0/{INSTAGRAM_ACCOUNT_ID}/media",
-            data={
+            params={
                 "image_url": image_url,
                 "caption": caption,
                 "access_token": INSTAGRAM_ACCESS_TOKEN
