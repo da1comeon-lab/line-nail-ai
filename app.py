@@ -37,6 +37,9 @@ GOOGLE_REDIRECT_URI = os.getenv(
     "https://line-nail-ai.onrender.com/oauth2callback"
 )
 
+INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
 
 user_shop = {}
@@ -137,6 +140,7 @@ def home():
     return """
     LINE Nail AI Running<br><br>
     確認ページ:<br>
+    /instagram-status<br>
     /google-status<br>
     /google-login<br>
     /google-locations<br>
@@ -165,9 +169,63 @@ def callback():
     return "OK"
 
 
+@app.route("/instagram-status")
+def instagram_status():
+    html = "<h2>Instagram連携 状態確認</h2>"
+
+    html += "<h3>環境変数</h3>"
+    html += "<ul>"
+    html += f"<li>INSTAGRAM_ACCOUNT_ID: {'設定あり' if INSTAGRAM_ACCOUNT_ID else '未設定'}</li>"
+    html += f"<li>INSTAGRAM_ACCESS_TOKEN: {'設定あり' if INSTAGRAM_ACCESS_TOKEN else '未設定'}</li>"
+    html += f"<li>INSTAGRAM_ACCOUNT_ID value: {INSTAGRAM_ACCOUNT_ID if INSTAGRAM_ACCOUNT_ID else ''}</li>"
+    html += "</ul>"
+
+    if not INSTAGRAM_ACCOUNT_ID or not INSTAGRAM_ACCESS_TOKEN:
+        html += """
+        <p>Instagramの環境変数が足りません。</p>
+        <p>RenderのEnvironmentに以下を追加してください。</p>
+        <pre>
+INSTAGRAM_ACCOUNT_ID
+INSTAGRAM_ACCESS_TOKEN
+        </pre>
+        """
+        return html
+
+    try:
+        res = requests.get(
+            f"https://graph.facebook.com/v25.0/{INSTAGRAM_ACCOUNT_ID}",
+            params={
+                "fields": "id,username,media_count",
+                "access_token": INSTAGRAM_ACCESS_TOKEN
+            },
+            timeout=30
+        )
+
+        html += "<h3>Instagram API確認</h3>"
+        html += f"<p>Instagram API status: {res.status_code}</p>"
+        html += f"<pre>{res.text}</pre>"
+
+        if res.status_code == 200:
+            html += """
+            <p>Instagram連携は確認できました。次にテスト投稿機能を追加できます。</p>
+            """
+        else:
+            html += """
+            <p>エラーの場合は、INSTAGRAM_ACCESS_TOKENの期限切れ、権限不足、またはInstagram Account ID違いの可能性があります。</p>
+            """
+
+        return html
+
+    except Exception as e:
+        print("Instagram status error:", e)
+        print(traceback.format_exc())
+        return html + f"<p>Instagram確認エラー: {e}</p>"
+
+
 @app.route("/google-status")
 def google_status():
     html = "<h2>Google連携 状態確認</h2>"
+
     html += "<h3>環境変数</h3>"
     html += "<ul>"
     html += f"<li>GOOGLE_CLIENT_ID: {'設定あり' if GOOGLE_CLIENT_ID else '未設定'}</li>"
@@ -183,6 +241,7 @@ def google_status():
 
     try:
         token = get_access_token()
+
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json"
@@ -195,11 +254,14 @@ def google_status():
         )
 
         html += "<h3>Google Business Profile API確認</h3>"
-        html += f"<p>accounts API status: {accounts_res.status_code}</p>"
+        html += f"<p>アカウントAPIステータス: {accounts_res.status_code}</p>"
         html += f"<pre>{accounts_res.text}</pre>"
+
         return html
 
     except Exception as e:
+        print("Google status error:", e)
+        print(traceback.format_exc())
         return html + f"<p>Google確認エラー: {e}</p>"
 
 
@@ -510,7 +572,6 @@ def improve_nail_image(filepath):
     rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
     rgb = natural_adjustment(rgb, is_hand_photo)
 
-    # 正方形化しない。元画像の縦横比のまま、長辺だけ整える。
     rgb = resize_keep_aspect(rgb, max_side=1280)
 
     out = Image.fromarray(rgb).convert("RGB")
@@ -526,7 +587,6 @@ def create_line_preview_image(original_path, preview_path):
     img = Image.open(original_path).convert("RGB")
     img = ImageOps.exif_transpose(img)
 
-    # プレビューも正方形にしない。元の形のまま小さくする。
     img.thumbnail((600, 600), Image.LANCZOS)
 
     img.save(
