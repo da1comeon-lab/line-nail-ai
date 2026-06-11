@@ -7,6 +7,7 @@ from openai import OpenAI
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from urllib.parse import urlencode
+from io import BytesIO
 
 import os
 import uuid
@@ -193,6 +194,44 @@ def serve_image(filename):
 
 @app.route("/instagram/images/<filename>")
 def serve_instagram_image(filename):
+        try:
+                    source_path = os.path.join(IMAGE_DIR, filename)
+                    img = Image.open(source_path).convert("RGB")
+                    img = ImageOps.exif_transpose(img)
+
+        target_w, target_h = 1080, 1350
+
+        cover_ratio = max(target_w / img.width, target_h / img.height)
+            cover_size = (
+                            max(target_w, int(img.width * cover_ratio)),
+                            max(target_h, int(img.height * cover_ratio))
+            )
+        cover = img.resize(cover_size, Image.LANCZOS)
+        left = (cover.width - target_w) // 2
+        top = (cover.height - target_h) // 2
+        cover = cover.crop((left, top, left + target_w, top + target_h))
+        cover = cover.filter(ImageFilter.GaussianBlur(radius=28))
+        cover = ImageEnhance.Brightness(cover).enhance(0.92)
+
+        foreground = img.copy()
+        foreground.thumbnail((target_w, target_h), Image.LANCZOS)
+        x = (target_w - foreground.width) // 2
+        y = (target_h - foreground.height) // 2
+        cover.paste(foreground, (x, y))
+
+        buf = BytesIO()
+        cover.save(buf, "JPEG", quality=92, optimize=True)
+        data = buf.getvalue()
+
+        response = app.response_class(data, mimetype="image/jpeg")
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Length"] = str(len(data))
+        return response
+
+except Exception as e:
+        print("instagram image error:", e)
+
     response = send_from_directory(
         IMAGE_DIR,
         filename,
