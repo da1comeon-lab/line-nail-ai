@@ -194,18 +194,18 @@ def serve_image(filename):
 
 @app.route("/instagram/images/<filename>")
 def serve_instagram_image(filename):
-        try:
-                    source_path = os.path.join(IMAGE_DIR, filename)
-                    img = Image.open(source_path).convert("RGB")
-                    img = ImageOps.exif_transpose(img)
+    try:
+        source_path = os.path.join(IMAGE_DIR, filename)
+        img = Image.open(source_path).convert("RGB")
+        img = ImageOps.exif_transpose(img)
 
         target_w, target_h = 1080, 1350
 
         cover_ratio = max(target_w / img.width, target_h / img.height)
-            cover_size = (
-                            max(target_w, int(img.width * cover_ratio)),
-                            max(target_h, int(img.height * cover_ratio))
-            )
+        cover_size = (
+            max(target_w, int(img.width * cover_ratio)),
+            max(target_h, int(img.height * cover_ratio))
+        )
         cover = img.resize(cover_size, Image.LANCZOS)
         left = (cover.width - target_w) // 2
         top = (cover.height - target_h) // 2
@@ -229,19 +229,18 @@ def serve_instagram_image(filename):
         response.headers["Content-Length"] = str(len(data))
         return response
 
-except Exception as e:
+    except Exception as e:
         print("instagram image error:", e)
-
-    response = send_from_directory(
-        IMAGE_DIR,
-        filename,
-        mimetype="image/jpeg",
-        as_attachment=False,
-        max_age=3600
-    )
-    response.headers["Cache-Control"] = "public, max-age=3600"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
+        response = send_from_directory(
+            IMAGE_DIR,
+            filename,
+            mimetype="image/jpeg",
+            as_attachment=False,
+            max_age=3600
+        )
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
 
 @app.route("/callback", methods=["POST"])
