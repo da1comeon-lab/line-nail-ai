@@ -29,7 +29,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com").rstrip("/")
 IMAGE_DIR = "static/images"
+INSTAGRAM_DIR = "static/instagram"
 os.makedirs(IMAGE_DIR, exist_ok=True)
+os.makedirs(INSTAGRAM_DIR, exist_ok=True)
 LATEST_IMAGE_FILE = os.path.join(IMAGE_DIR, "_latest_image.txt")
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -195,38 +197,21 @@ def serve_image(filename):
 @app.route("/instagram/images/<filename>")
 def serve_instagram_image(filename):
     try:
-        source_path = os.path.join(IMAGE_DIR, filename)
-        img = Image.open(source_path).convert("RGB")
-        img = ImageOps.exif_transpose(img)
+        instagram_path = os.path.join(INSTAGRAM_DIR, filename)
 
-        target_w, target_h = 1080, 1350
+        if not os.path.exists(instagram_path):
+            source_path = os.path.join(IMAGE_DIR, filename)
+            create_instagram_post_image(source_path, instagram_path)
 
-        cover_ratio = max(target_w / img.width, target_h / img.height)
-        cover_size = (
-            max(target_w, int(img.width * cover_ratio)),
-            max(target_h, int(img.height * cover_ratio))
+        response = send_from_directory(
+            INSTAGRAM_DIR,
+            filename,
+            mimetype="image/jpeg",
+            as_attachment=False,
+            max_age=3600
         )
-        cover = img.resize(cover_size, Image.LANCZOS)
-        left = (cover.width - target_w) // 2
-        top = (cover.height - target_h) // 2
-        cover = cover.crop((left, top, left + target_w, top + target_h))
-        cover = cover.filter(ImageFilter.GaussianBlur(radius=28))
-        cover = ImageEnhance.Brightness(cover).enhance(0.92)
-
-        foreground = img.copy()
-        foreground.thumbnail((target_w, target_h), Image.LANCZOS)
-        x = (target_w - foreground.width) // 2
-        y = (target_h - foreground.height) // 2
-        cover.paste(foreground, (x, y))
-
-        buf = BytesIO()
-        cover.save(buf, "JPEG", quality=92, optimize=True)
-        data = buf.getvalue()
-
-        response = app.response_class(data, mimetype="image/jpeg")
         response.headers["Cache-Control"] = "public, max-age=3600"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Content-Length"] = str(len(data))
         return response
 
     except Exception as e:
@@ -865,6 +850,37 @@ def create_line_preview_image(original_path, preview_path):
     )
 
 
+def create_instagram_post_image(source_path, instagram_path):
+    img = Image.open(source_path).convert("RGB")
+    img = ImageOps.exif_transpose(img)
+
+    target_w, target_h = 1080, 1350
+
+    ratio = max(target_w / img.width, target_h / img.height)
+    bg_w = max(target_w, int(img.width * ratio))
+    bg_h = max(target_h, int(img.height * ratio))
+
+    bg = img.resize((bg_w, bg_h), Image.LANCZOS)
+    left = (bg.width - target_w) // 2
+    top = (bg.height - target_h) // 2
+    bg = bg.crop((left, top, left + target_w, top + target_h))
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=28))
+    bg = ImageEnhance.Brightness(bg).enhance(0.92)
+
+    fg = img.copy()
+    fg.thumbnail((target_w, target_h), Image.LANCZOS)
+    x = (target_w - fg.width) // 2
+    y = (target_h - fg.height) // 2
+    bg.paste(fg, (x, y))
+
+    bg.save(
+        instagram_path,
+        "JPEG",
+        quality=92,
+        optimize=True
+    )
+
+
 def clean_text(text):
     for old, new in NG_REPLACE.items():
         text = text.replace(old, new)
@@ -970,6 +986,7 @@ def handle_image(event):
 
         filepath = os.path.join(IMAGE_DIR, filename)
         preview_path = os.path.join(IMAGE_DIR, preview_filename)
+        instagram_path = os.path.join(INSTAGRAM_DIR, filename)
 
         stage = "画像保存"
         with open(filepath, "wb") as f:
@@ -982,9 +999,13 @@ def handle_image(event):
         stage = "LINEプレビュー作成"
         create_line_preview_image(filepath, preview_path)
 
+        stage = "Instagram画像作成"
+        create_instagram_post_image(filepath, instagram_path)
+
         image_url = f"{BASE_URL}/static/images/{filename}"
         preview_url = f"{BASE_URL}/static/images/{preview_filename}"
-        save_latest_image(image_url, preview_url)
+        instagram_image_url = f"{BASE_URL}/instagram/images/{filename}"
+        save_latest_image(image_url, preview_url, instagram_image_url)
 
         stage = "画像push送信"
         image_sent = safe_push_image(user_id, image_url, preview_url)
