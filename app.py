@@ -401,9 +401,6 @@ def instagram_test_post():
     if not image_url:
         return "投稿する画像URLがありません。先にLINEで画像を送るか、?image_url=画像URL を付けてください。"
 
-    if "/static/images/" in image_url:
-        image_url = image_url.replace("/static/images/", "/instagram/images/")
-
     caption = request.args.get("caption") or "Instagram API連携テスト投稿です。\nSmily AI Postから投稿しています。"
 
     if confirm != "1":
@@ -983,10 +980,11 @@ def handle_image(event):
         image_id = uuid.uuid4().hex
         filename = f"{image_id}.jpg"
         preview_filename = f"preview_{image_id}.jpg"
+        instagram_filename = f"instagram_{image_id}.jpg"
 
         filepath = os.path.join(IMAGE_DIR, filename)
         preview_path = os.path.join(IMAGE_DIR, preview_filename)
-        instagram_path = os.path.join(INSTAGRAM_DIR, filename)
+        instagram_path = os.path.join(IMAGE_DIR, instagram_filename)
 
         stage = "画像保存"
         with open(filepath, "wb") as f:
@@ -1004,7 +1002,7 @@ def handle_image(event):
 
         image_url = f"{BASE_URL}/static/images/{filename}"
         preview_url = f"{BASE_URL}/static/images/{preview_filename}"
-        instagram_image_url = f"{BASE_URL}/instagram/images/{filename}"
+        instagram_image_url = f"{BASE_URL}/static/images/{instagram_filename}"
         save_latest_image(image_url, preview_url, instagram_image_url)
 
         stage = "画像push送信"
