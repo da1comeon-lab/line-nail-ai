@@ -152,7 +152,7 @@ def save_latest_image(image_url, preview_url, instagram_image_url=None):
 def read_latest_image():
     try:
         if not os.path.exists(LATEST_IMAGE_FILE):
-            return None, None
+            return None, None, None
 
         with open(LATEST_IMAGE_FILE, "r", encoding="utf-8") as f:
             lines = [line.strip() for line in f.readlines()]
