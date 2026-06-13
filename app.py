@@ -168,7 +168,13 @@ def drive_create_folder(token, name, parent_id=None):
 
 
 def drive_get_or_create_folder(token, name, parent_id=None):
-    folder_id = drive_find_folder(token, name, parent_id)
+    try:
+        folder_id = drive_find_folder(token, name, parent_id)
+    except requests.HTTPError as e:
+        if e.response is None or e.response.status_code != 403:
+            raise
+        folder_id = None
+
     if folder_id:
         return folder_id
     return drive_create_folder(token, name, parent_id)
