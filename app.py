@@ -445,6 +445,7 @@ def drive_login():
     flow = Flow.from_client_config(
         google_client_config(),
         scopes=DRIVE_SCOPES,
+        autogenerate_code_verifier=True,
     )
     flow.redirect_uri = GOOGLE_REDIRECT_URI
 
@@ -455,6 +456,7 @@ def drive_login():
     )
 
     session["oauth_state"] = state
+    session["code_verifier"] = flow.code_verifier
     session["oauth_kind"] = "drive"
 
     return redirect(authorization_url)
@@ -464,8 +466,9 @@ def drive_login():
 def oauth2callback():
     try:
         state = session.get("oauth_state")
+        code_verifier = session.get("code_verifier")
 
-        if not state:
+        if not state or not code_verifier:
             return "Google連携エラー：セッション情報が切れています。もう一度 /drive-login からやり直してください。"
 
         flow = Flow.from_client_config(
@@ -474,6 +477,7 @@ def oauth2callback():
             state=state,
         )
         flow.redirect_uri = GOOGLE_REDIRECT_URI
+        flow.code_verifier = code_verifier
         flow.fetch_token(authorization_response=request.url)
 
         refresh_token = flow.credentials.refresh_token
