@@ -584,7 +584,7 @@ def handle_text(event):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text=f"{SHOPS[text]['name']}で設定しました。\nネイル画像を送ってください。"
+                text=f"{text}に設定しました。\nネイル画像を送ってください。"
             ),
         )
         return
@@ -605,7 +605,7 @@ def handle_image(event):
     try:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"{shop_key}の画像を受け取りました。補正してGoogle Driveへ保存します。"),
+            TextSendMessage(text="画像を受け取りました。\n保存が完了したらお知らせします。"),
         )
 
         message_content = line_bot_api.get_message_content(event.message.id)
@@ -613,18 +613,19 @@ def handle_image(event):
 
         if result["drive"]:
             drive_text = (
-                "Google Drive保存完了\n\n"
+                "保存完了しました。\n\n"
                 f"店舗：{shop_key}\n"
                 f"日付：{result['date_folder']}\n"
-                f"補正済み画像：{result['drive']['corrected'].get('webViewLink', '')}\n\n"
-                "あとでCodexに「新しい画像を確認して投稿して」と指示してください。"
+                "状態：未投稿\n\n"
+                "投稿用の画像として保存しました。"
             )
         else:
             drive_text = (
-                "画像補正は完了しましたが、Google Drive連携が未設定です。\n\n"
+                "画像は保存しました。\n\n"
                 f"店舗：{shop_key}\n"
-                f"確認用URL：{result['corrected_url']}\n\n"
-                "Renderで GOOGLE_DRIVE_REFRESH_TOKEN を設定してください。"
+                f"日付：{result['date_folder']}\n"
+                "状態：未投稿\n\n"
+                "管理側の保存設定を確認してください。"
             )
 
         line_bot_api.push_message(user_id, TextSendMessage(text=drive_text))
