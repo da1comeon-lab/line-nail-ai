@@ -3,19 +3,18 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-from openai import OpenAI
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
-from urllib.parse import urlencode
-from io import BytesIO
 
 import os
 import uuid
-import base64
-import random
+import json
 import secrets
 import requests
 import traceback
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import cv2
 
@@ -25,84 +24,62 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 
 line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 BASE_URL = os.getenv("BASE_URL", "https://line-nail-ai.onrender.com").rstrip("/")
-IMAGE_DIR = "static/images"
-INSTAGRAM_DIR = "static/instagram"
-os.makedirs(IMAGE_DIR, exist_ok=True)
-os.makedirs(INSTAGRAM_DIR, exist_ok=True)
-LATEST_IMAGE_FILE = os.path.join(IMAGE_DIR, "_latest_image.txt")
+
+LOCAL_UPLOAD_DIR = "static/uploads"
+os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
+GOOGLE_DRIVE_REFRESH_TOKEN = os.getenv("GOOGLE_DRIVE_REFRESH_TOKEN") or os.getenv("GOOGLE_REFRESH_TOKEN")
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
     "https://line-nail-ai.onrender.com/oauth2callback"
 )
+GOOGLE_DRIVE_ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID", "").strip()
+GOOGLE_DRIVE_ROOT_FOLDER_NAME = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_NAME", "Smily AI 投稿用")
 
-INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
-INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-META_APP_ID = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID")
-META_APP_SECRET = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET")
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
-SCOPES = ["https://www.googleapis.com/auth/business.manage"]
+JST = ZoneInfo("Asia/Tokyo")
 
 user_shop = {}
 
 SHOPS = {
     "八尾店": {
+        "slug": "yao",
+        "folder_name": "八尾店",
         "name": "ネイルサロン スマイリー八尾店",
         "info": "〒581-0869 大阪府八尾市桜ヶ丘3丁目119 加島ビル1F\nTEL 072-920-7313",
         "area_tag": "#八尾ネイル",
     },
     "住道店": {
+        "slug": "suminodo",
+        "folder_name": "住道店",
         "name": "ネイルサロン スマイリー住道店",
         "info": "〒574-0046 大阪府大東市赤井1丁目15-27 ポップタウン住道5番館 2F\nTEL 072-870-0585",
         "area_tag": "#住道ネイル",
     },
     "心斎橋店": {
+        "slug": "shinsaibashi",
+        "folder_name": "心斎橋店",
         "name": "ネイルサロン スマイリー心斎橋店",
         "info": "〒542-0086 大阪府大阪市中央区西心斎橋1丁目8-22 4階\nTEL 06-4708-7318",
         "area_tag": "#心斎橋ネイル",
     },
     "マカナ": {
+        "slug": "makana",
+        "folder_name": "マカナ",
         "name": "ネイルサロン マカナ河内山本店",
         "info": "〒581-0013 大阪府八尾市山本町南4丁目1-3 岩田ビル506号\nTEL 070-9009-1440",
         "area_tag": "#河内山本ネイル",
-    }
+    },
 }
 
-ENDINGS = [
-    "ご予約お待ちしております。",
-    "ご来店お待ちしております。",
-    "気になる方はぜひお試しください。"
-]
 
-WRITING_STYLES = [
-    "ネイリストがそのまま投稿したような、短く自然な文章。",
-    "少しラフで、説明しすぎないサロンブログ風。",
-    "色味と雰囲気だけをさらっと書く文章。",
-    "落ち着いた言い方で、押し売り感を出さない文章。",
-    "きれいにまとめすぎず、日常の投稿っぽい文章。"
-]
-
-NG_REPLACE = {
-    "個性的": "少し雰囲気のある",
-    "個性": "雰囲気",
-    "洗練": "すっきり",
-    "演出": "仕上がり",
-    "魅力": "良さ",
-    "存在感": "ポイント感",
-    "ワンランク": "",
-    "映える": "きれいに見える",
-    "アクセント": "ポイント",
-    "上品な": "",
-    "上品": "",
-    "ちょうどいいです": "合わせやすい仕上がりです",
-    "おすすめです。おすすめです。": "おすすめです。",
-}
+def now_jst():
+    return datetime.now(JST)
 
 
 def google_client_config():
@@ -112,66 +89,319 @@ def google_client_config():
             "client_secret": GOOGLE_CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [GOOGLE_REDIRECT_URI]
+            "redirect_uris": [GOOGLE_REDIRECT_URI],
         }
     }
 
 
-def get_google_credentials():
-    if not GOOGLE_REFRESH_TOKEN:
+def get_drive_credentials():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_DRIVE_REFRESH_TOKEN:
         return None
 
     return Credentials(
         token=None,
-        refresh_token=GOOGLE_REFRESH_TOKEN,
+        refresh_token=GOOGLE_DRIVE_REFRESH_TOKEN,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=GOOGLE_CLIENT_ID,
         client_secret=GOOGLE_CLIENT_SECRET,
-        scopes=SCOPES
+        scopes=DRIVE_SCOPES,
     )
 
 
-def get_access_token():
-    creds = get_google_credentials()
-
+def get_drive_access_token():
+    creds = get_drive_credentials()
     if not creds:
         return None
 
     from google.auth.transport.requests import Request
+
     creds.refresh(Request())
     return creds.token
 
 
-def save_latest_image(image_url, preview_url, instagram_image_url=None):
-    try:
-        with open(LATEST_IMAGE_FILE, "w", encoding="utf-8") as f:
-            f.write(image_url + "\n")
-            f.write(preview_url + "\n")
-            f.write((instagram_image_url or image_url) + "\n")
-    except Exception as e:
-        print("save latest image error:", e)
+def drive_headers(token):
+    return {"Authorization": f"Bearer {token}"}
 
 
-def read_latest_image():
-    try:
-        if not os.path.exists(LATEST_IMAGE_FILE):
-            return None, None, None
+def drive_find_folder(token, name, parent_id=None):
+    query = [
+        "mimeType = 'application/vnd.google-apps.folder'",
+        "trashed = false",
+        f"name = '{name.replace(chr(39), chr(92) + chr(39))}'",
+    ]
 
-        with open(LATEST_IMAGE_FILE, "r", encoding="utf-8") as f:
-            lines = [line.strip() for line in f.readlines()]
+    if parent_id:
+        query.append(f"'{parent_id}' in parents")
 
-        image_url = lines[0] if len(lines) > 0 else None
-        preview_url = lines[1] if len(lines) > 1 else None
-        instagram_image_url = lines[2] if len(lines) > 2 else None
+    res = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        headers=drive_headers(token),
+        params={
+            "q": " and ".join(query),
+            "fields": "files(id,name)",
+            "pageSize": 10,
+        },
+        timeout=30,
+    )
+    res.raise_for_status()
+    files = res.json().get("files", [])
+    return files[0]["id"] if files else None
 
-        if not instagram_image_url and image_url:
-            instagram_image_url = image_url.replace("/static/images/", "/instagram/images/")
 
-        return image_url, preview_url, instagram_image_url
+def drive_create_folder(token, name, parent_id=None):
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
 
-    except Exception as e:
-        print("read latest image error:", e)
-        return None, None, None
+    if parent_id:
+        metadata["parents"] = [parent_id]
+
+    res = requests.post(
+        "https://www.googleapis.com/drive/v3/files",
+        headers={**drive_headers(token), "Content-Type": "application/json"},
+        json=metadata,
+        timeout=30,
+    )
+    res.raise_for_status()
+    return res.json()["id"]
+
+
+def drive_get_or_create_folder(token, name, parent_id=None):
+    folder_id = drive_find_folder(token, name, parent_id)
+    if folder_id:
+        return folder_id
+    return drive_create_folder(token, name, parent_id)
+
+
+def drive_upload_file(token, filepath, filename, folder_id, mime_type):
+    metadata = {"name": filename, "parents": [folder_id]}
+
+    with open(filepath, "rb") as f:
+        files = {
+            "metadata": (
+                "metadata",
+                json.dumps(metadata, ensure_ascii=False),
+                "application/json; charset=UTF-8",
+            ),
+            "file": (filename, f, mime_type),
+        }
+        res = requests.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+            headers=drive_headers(token),
+            files=files,
+            timeout=60,
+        )
+
+    res.raise_for_status()
+    return res.json()
+
+
+def save_text_file(path, text):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def fit_to_square_no_cut(rgb):
+    h, w, _ = rgb.shape
+    size = max(w, h)
+    canvas = np.ones((size, size, 3), dtype=np.uint8) * 255
+
+    x = (size - w) // 2
+    y = int((size - h) * 0.32)
+    y = max(0, min(y, size - h))
+
+    canvas[y:y + h, x:x + w] = rgb
+    return canvas
+
+
+def soft_highlight_control(rgb):
+    img = rgb.astype(np.float32)
+    threshold = 245
+    mask = img > threshold
+    img[mask] = threshold + (img[mask] - threshold) * 0.45
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def detect_image_type(rgb):
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    h, s, v = cv2.split(hsv)
+
+    skin_mask = ((h < 25) | (h > 165)) & (s > 25) & (s < 150) & (v > 80)
+    dark_mask = (v < 70) & (s > 25)
+
+    total = rgb.shape[0] * rgb.shape[1]
+    skin_ratio = float(np.sum(skin_mask)) / total
+    dark_ratio = float(np.sum(dark_mask)) / total
+
+    return skin_ratio > 0.10, dark_ratio > 0.035
+
+
+def protect_dark_tones(rgb):
+    img = rgb.astype(np.float32)
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    v = hsv[:, :, 2]
+    dark_mask = v < 65
+    img[dark_mask] = img[dark_mask] * 1.08 + 3
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def auto_light_correction(rgb, is_hand_photo, has_black_nail):
+    rgb = soft_highlight_control(rgb)
+
+    if has_black_nail:
+        rgb = protect_dark_tones(rgb)
+
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    mean_l = float(np.mean(l))
+
+    if is_hand_photo:
+        lab = cv2.merge((l, a, b))
+        bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        if mean_l < 115:
+            bgr = cv2.convertScaleAbs(bgr, alpha=1.015, beta=3)
+        elif mean_l > 205:
+            bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
+    else:
+        if mean_l < 120:
+            clahe = cv2.createCLAHE(clipLimit=0.8, tileGridSize=(8, 8))
+            l = clahe.apply(l)
+        lab = cv2.merge((l, a, b))
+        bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        if mean_l < 120:
+            bgr = cv2.convertScaleAbs(bgr, alpha=1.025, beta=3)
+        elif mean_l > 210:
+            bgr = cv2.convertScaleAbs(bgr, alpha=0.99, beta=-2)
+
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+def natural_adjustment(rgb, is_hand_photo):
+    pil = Image.fromarray(rgb).convert("RGB")
+
+    if is_hand_photo:
+        pil = ImageEnhance.Brightness(pil).enhance(1.00)
+        pil = ImageEnhance.Color(pil).enhance(1.01)
+        pil = ImageEnhance.Contrast(pil).enhance(0.97)
+        pil = ImageEnhance.Sharpness(pil).enhance(0.94)
+        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.35))
+        pil = Image.blend(pil, soft, 0.09)
+    else:
+        pil = ImageEnhance.Brightness(pil).enhance(1.00)
+        pil = ImageEnhance.Color(pil).enhance(1.025)
+        pil = ImageEnhance.Contrast(pil).enhance(1.015)
+        pil = ImageEnhance.Sharpness(pil).enhance(1.08)
+        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.20))
+        pil = Image.blend(pil, soft, 0.03)
+
+    return np.array(pil)
+
+
+def improve_nail_image(source_path, output_path):
+    pil = Image.open(source_path).convert("RGB")
+    pil = ImageOps.exif_transpose(pil)
+
+    rgb = np.array(pil)
+    rgb = fit_to_square_no_cut(rgb)
+
+    pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
+    rgb = np.array(pil)
+
+    is_hand_photo, has_black_nail = detect_image_type(rgb)
+    rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
+    rgb = natural_adjustment(rgb, is_hand_photo)
+
+    out = Image.fromarray(rgb).convert("RGB")
+    out.save(output_path, "JPEG", quality=95, optimize=True)
+
+
+def shop_message():
+    return """店舗名を送信してください。
+
+・八尾店
+・住道店
+・心斎橋店
+・マカナ
+
+設定後にネイル画像を送ると、
+画像補正して店舗別フォルダへ保存します。"""
+
+
+def build_post_text(shop):
+    return f"""投稿候補文はCodexで作成します。
+
+{shop["area_tag"]} #ネイルデザイン #ニュアンスネイル #シンプルネイル #ネイルサロン
+
+{shop["name"]}
+{shop["info"]}
+"""
+
+
+def save_image_workflow(message_content, shop_key):
+    shop = SHOPS[shop_key]
+    stamp = now_jst()
+    date_folder = stamp.strftime("%Y-%m-%d")
+    basename = stamp.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+
+    local_dir = os.path.join(LOCAL_UPLOAD_DIR, shop["slug"], date_folder)
+    os.makedirs(local_dir, exist_ok=True)
+
+    original_filename = f"{basename}_original.jpg"
+    corrected_filename = f"{basename}_corrected.jpg"
+    text_filename = f"{basename}_post_text.txt"
+
+    original_path = os.path.join(local_dir, original_filename)
+    corrected_path = os.path.join(local_dir, corrected_filename)
+    text_path = os.path.join(local_dir, text_filename)
+
+    with open(original_path, "wb") as f:
+        for chunk in message_content.iter_content():
+            f.write(chunk)
+
+    improve_nail_image(original_path, corrected_path)
+    post_text = build_post_text(shop)
+    save_text_file(text_path, post_text)
+
+    result = {
+        "shop_key": shop_key,
+        "shop": shop,
+        "date_folder": date_folder,
+        "original_filename": original_filename,
+        "corrected_filename": corrected_filename,
+        "text_filename": text_filename,
+        "original_path": original_path,
+        "corrected_path": corrected_path,
+        "text_path": text_path,
+        "original_url": f"{BASE_URL}/{original_path.replace(os.sep, '/')}",
+        "corrected_url": f"{BASE_URL}/{corrected_path.replace(os.sep, '/')}",
+        "drive": None,
+    }
+
+    token = get_drive_access_token()
+    if token:
+        root_id = GOOGLE_DRIVE_ROOT_FOLDER_ID or drive_get_or_create_folder(
+            token,
+            GOOGLE_DRIVE_ROOT_FOLDER_NAME,
+        )
+        shop_folder_id = drive_get_or_create_folder(token, shop["folder_name"], root_id)
+        date_folder_id = drive_get_or_create_folder(token, date_folder, shop_folder_id)
+
+        original_drive = drive_upload_file(token, original_path, original_filename, date_folder_id, "image/jpeg")
+        corrected_drive = drive_upload_file(token, corrected_path, corrected_filename, date_folder_id, "image/jpeg")
+        text_drive = drive_upload_file(token, text_path, text_filename, date_folder_id, "text/plain")
+
+        result["drive"] = {
+            "root_folder_id": root_id,
+            "shop_folder_id": shop_folder_id,
+            "date_folder_id": date_folder_id,
+            "original": original_drive,
+            "corrected": corrected_drive,
+            "text": text_drive,
+        }
+
+    return result
 
 
 @app.route("/")
@@ -179,53 +409,15 @@ def home():
     return """
     LINE Nail AI Running<br><br>
     確認ページ:<br>
-    /instagram-status<br>
-    /instagram-token-exchange<br>
-    /latest-image<br>
-    /instagram-test-post<br>
-    /google-status<br>
-    /google-login<br>
-    /google-locations<br>
+    /drive-status<br>
+    /drive-login<br>
+    /latest-uploads<br>
     """
 
 
-@app.route("/static/images/<filename>")
-def serve_image(filename):
-    return send_from_directory(IMAGE_DIR, filename)
-
-
-@app.route("/instagram/images/<filename>")
-def serve_instagram_image(filename):
-    try:
-        instagram_path = os.path.join(INSTAGRAM_DIR, filename)
-
-        if not os.path.exists(instagram_path):
-            source_path = os.path.join(IMAGE_DIR, filename)
-            create_instagram_post_image(source_path, instagram_path)
-
-        response = send_from_directory(
-            INSTAGRAM_DIR,
-            filename,
-            mimetype="image/jpeg",
-            as_attachment=False,
-            max_age=3600
-        )
-        response.headers["Cache-Control"] = "public, max-age=3600"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
-
-    except Exception as e:
-        print("instagram image error:", e)
-        response = send_from_directory(
-            IMAGE_DIR,
-            filename,
-            mimetype="image/jpeg",
-            as_attachment=False,
-            max_age=3600
-        )
-        response.headers["Cache-Control"] = "public, max-age=3600"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+@app.route("/static/uploads/<path:filename>")
+def serve_upload(filename):
+    return send_from_directory(LOCAL_UPLOAD_DIR, filename)
 
 
 @app.route("/callback", methods=["POST"])
@@ -245,297 +437,27 @@ def callback():
     return "OK"
 
 
-@app.route("/instagram-status")
-def instagram_status():
-    html = "<h2>Instagram連携 状態確認</h2>"
-
-    html += "<h3>環境変数</h3>"
-    html += "<ul>"
-    html += f"<li>INSTAGRAM_ACCOUNT_ID: {'設定あり' if INSTAGRAM_ACCOUNT_ID else '未設定'}</li>"
-    html += f"<li>INSTAGRAM_ACCESS_TOKEN: {'設定あり' if INSTAGRAM_ACCESS_TOKEN else '未設定'}</li>"
-    html += f"<li>INSTAGRAM_ACCOUNT_ID value: {INSTAGRAM_ACCOUNT_ID if INSTAGRAM_ACCOUNT_ID else ''}</li>"
-    html += "</ul>"
-
-    if not INSTAGRAM_ACCOUNT_ID or not INSTAGRAM_ACCESS_TOKEN:
-        html += """
-        <p>Instagramの環境変数が足りません。</p>
-        <p>RenderのEnvironmentに以下を追加してください。</p>
-        <pre>
-INSTAGRAM_ACCOUNT_ID
-INSTAGRAM_ACCESS_TOKEN
-        </pre>
-        """
-        return html
-
-    try:
-        res = requests.get(
-            f"https://graph.facebook.com/v25.0/{INSTAGRAM_ACCOUNT_ID}",
-            params={
-                "fields": "id,username,media_count",
-                "access_token": INSTAGRAM_ACCESS_TOKEN
-            },
-            timeout=30
-        )
-
-        html += "<h3>Instagram API確認</h3>"
-        html += f"<p>Instagram API status: {res.status_code}</p>"
-        html += f"<pre>{res.text}</pre>"
-
-        if res.status_code == 200:
-            html += """
-            <p>Instagram連携は確認できました。次に /latest-image で画像URLを確認できます。</p>
-            """
-        else:
-            html += """
-            <p>エラーの場合は、INSTAGRAM_ACCESS_TOKENの期限切れ、権限不足、またはInstagram Account ID違いの可能性があります。</p>
-            """
-
-        return html
-
-    except Exception as e:
-        print("Instagram status error:", e)
-        print(traceback.format_exc())
-        return html + f"<p>Instagram確認エラー: {e}</p>"
-
-
-@app.route("/instagram-token-exchange")
-def instagram_token_exchange():
-    html = "<h2>Instagram long token exchange</h2>"
-
-    html += "<h3>Environment</h3>"
-    html += "<ul>"
-    html += f"<li>META_APP_ID: {'set' if META_APP_ID else 'missing'}</li>"
-    html += f"<li>META_APP_SECRET: {'set' if META_APP_SECRET else 'missing'}</li>"
-    html += f"<li>INSTAGRAM_ACCESS_TOKEN: {'set' if INSTAGRAM_ACCESS_TOKEN else 'missing'}</li>"
-    html += "</ul>"
-
-    if not META_APP_ID or not META_APP_SECRET or not INSTAGRAM_ACCESS_TOKEN:
-        html += """
-        <p>Missing environment variables.</p>
-        <p>Add these to Render Environment:</p>
-        <pre>
-META_APP_ID
-META_APP_SECRET
-INSTAGRAM_ACCESS_TOKEN
-        </pre>
-        <p>INSTAGRAM_ACCESS_TOKEN must be a fresh short-lived token from Graph API Explorer.</p>
-        """
-        return html
-
-    try:
-        res = requests.get(
-            "https://graph.facebook.com/v25.0/oauth/access_token",
-            params={
-                "grant_type": "fb_exchange_token",
-                "client_id": META_APP_ID,
-                "client_secret": META_APP_SECRET,
-                "fb_exchange_token": INSTAGRAM_ACCESS_TOKEN
-            },
-            timeout=30
-        )
-
-        html += "<h3>Result</h3>"
-        html += f"<p>Status: {res.status_code}</p>"
-        html += f"<pre>{res.text}</pre>"
-
-        if res.status_code != 200:
-            html += """
-            <p>Exchange failed.</p>
-            <p>If the token is expired, create a fresh short-lived token in Graph API Explorer and update INSTAGRAM_ACCESS_TOKEN first.</p>
-            """
-            return html
-
-        data = res.json()
-        long_token = data.get("access_token", "")
-        expires_in = data.get("expires_in", "")
-
-        html += "<h3>Put this into Render</h3>"
-        html += "<p>Replace INSTAGRAM_ACCESS_TOKEN with this access_token, then redeploy Render.</p>"
-        html += f"<p>expires_in: {expires_in}</p>"
-        html += f"<textarea style='width:100%;height:160px;'>{long_token}</textarea>"
-        html += "<p>After redeploy, open /instagram-status.</p>"
-
-        return html
-
-    except Exception as e:
-        return f"Instagram long token exchange error: {e}"
-
-
-@app.route("/latest-image")
-def latest_image():
-    image_url, preview_url, instagram_image_url = read_latest_image()
-
-    html = "<h2>最後に処理した画像</h2>"
-
-    if not image_url:
-        html += "<p>まだ画像がありません。先にLINEで画像を送ってください。</p>"
-        return html
-
-    instagram_image_url = instagram_image_url or image_url
-    test_url = "/instagram-test-post?" + urlencode({"image_url": instagram_image_url})
-
-    html += f"<p>image_url:</p><pre>{image_url}</pre>"
-    html += f"<p>preview_url:</p><pre>{preview_url if preview_url else ''}</pre>"
-    html += f"<p>instagram_image_url:</p><pre>{instagram_image_url}</pre>"
-    html += f'<p><a href="{image_url}" target="_blank">画像を開く</a></p>'
-    html += f'<p><a href="{instagram_image_url}" target="_blank">Instagram用画像URLを開く</a></p>'
-    html += f'<p><img src="{image_url}" style="max-width:360px;height:auto;border:1px solid #ddd;"></p>'
-    html += "<h3>Instagramテスト投稿</h3>"
-    html += "<p>下のリンクを開いても、まだ投稿はされません。確認画面が出ます。</p>"
-    html += f'<p><a href="{test_url}">Instagramテスト投稿の確認へ進む</a></p>'
-
-    return html
-
-
-@app.route("/instagram-test-post")
-def instagram_test_post():
-    if not INSTAGRAM_ACCOUNT_ID or not INSTAGRAM_ACCESS_TOKEN:
-        return "Instagramの環境変数 INSTAGRAM_ACCOUNT_ID / INSTAGRAM_ACCESS_TOKEN が設定されていません。"
-
-    image_url = request.args.get("image_url")
-    confirm = request.args.get("confirm")
-
-    if not image_url:
-        _, _, image_url = read_latest_image()
-
-    if not image_url:
-        return "投稿する画像URLがありません。先にLINEで画像を送るか、?image_url=画像URL を付けてください。"
-
-    caption = request.args.get("caption") or "Instagram API連携テスト投稿です。\nSmily AI Postから投稿しています。"
-
-    if confirm != "1":
-        confirmed_url = "/instagram-test-post?" + urlencode({
-            "confirm": "1",
-            "image_url": image_url
-        })
-        return f"""
-        <h2>Instagramテスト投稿 確認</h2>
-        <p>この画面ではまだ投稿していません。</p>
-        <p>下のリンクを押すと、実際にInstagramへ投稿されます。</p>
-        <h3>投稿画像</h3>
-        <pre>{image_url}</pre>
-        <p><img src="{image_url}" style="max-width:360px;height:auto;border:1px solid #ddd;"></p>
-        <h3>投稿本文</h3>
-        <pre>{caption}</pre>
-        <p><a href="{confirmed_url}">実際にInstagramへテスト投稿する</a></p>
-        """
-
-    try:
-        create_res = requests.post(
-            f"https://graph.facebook.com/v25.0/{INSTAGRAM_ACCOUNT_ID}/media",
-            data={
-                "image_url": image_url,
-                "caption": caption,
-                "access_token": INSTAGRAM_ACCESS_TOKEN
-            },
-            timeout=60
-        )
-
-        html = "<h2>Instagramテスト投稿 結果</h2>"
-        html += "<h3>1. メディアコンテナ作成</h3>"
-        html += f"<p>Status: {create_res.status_code}</p>"
-        html += f"<pre>{create_res.text}</pre>"
-
-        if create_res.status_code != 200:
-            html += "<p>コンテナ作成に失敗しました。画像URL、トークン、権限を確認してください。</p>"
-            return html
-
-        creation_id = create_res.json().get("id")
-
-        if not creation_id:
-            html += "<p>creation_id が取得できませんでした。</p>"
-            return html
-
-        publish_res = requests.post(
-            f"https://graph.facebook.com/v25.0/{INSTAGRAM_ACCOUNT_ID}/media_publish",
-            data={
-                "creation_id": creation_id,
-                "access_token": INSTAGRAM_ACCESS_TOKEN
-            },
-            timeout=60
-        )
-
-        html += "<h3>2. 投稿公開</h3>"
-        html += f"<p>Status: {publish_res.status_code}</p>"
-        html += f"<pre>{publish_res.text}</pre>"
-
-        if publish_res.status_code == 200:
-            html += "<p>Instagramへのテスト投稿が完了しました。</p>"
-        else:
-            html += "<p>公開に失敗しました。Metaのエラー本文を確認してください。</p>"
-
-        return html
-
-    except Exception as e:
-        print("Instagram test post error:", e)
-        print(traceback.format_exc())
-        return f"Instagramテスト投稿エラー: {e}"
-
-
-@app.route("/google-status")
-def google_status():
-    html = "<h2>Google連携 状態確認</h2>"
-
-    html += "<h3>環境変数</h3>"
-    html += "<ul>"
-    html += f"<li>GOOGLE_CLIENT_ID: {'設定あり' if GOOGLE_CLIENT_ID else '未設定'}</li>"
-    html += f"<li>GOOGLE_CLIENT_SECRET: {'設定あり' if GOOGLE_CLIENT_SECRET else '未設定'}</li>"
-    html += f"<li>GOOGLE_REFRESH_TOKEN: {'設定あり' if GOOGLE_REFRESH_TOKEN else '未設定'}</li>"
-    html += f"<li>GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}</li>"
-    html += f"<li>FLASK_SECRET_KEY: {'設定あり' if os.getenv('FLASK_SECRET_KEY') else '未設定'}</li>"
-    html += "</ul>"
-
-    if not GOOGLE_REFRESH_TOKEN:
-        html += "<p>GOOGLE_REFRESH_TOKEN が未設定です。先に /google-login を開いて連携してください。</p>"
-        return html
-
-    try:
-        token = get_access_token()
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json"
-        }
-
-        accounts_res = requests.get(
-            "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
-            headers=headers,
-            timeout=30
-        )
-
-        html += "<h3>Google Business Profile API確認</h3>"
-        html += f"<p>アカウントAPIステータス: {accounts_res.status_code}</p>"
-        html += f"<pre>{accounts_res.text}</pre>"
-
-        return html
-
-    except Exception as e:
-        print("Google status error:", e)
-        print(traceback.format_exc())
-        return html + f"<p>Google確認エラー: {e}</p>"
-
-
-@app.route("/google-login")
-def google_login():
+@app.route("/drive-login")
+def drive_login():
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        return "Googleの環境変数 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET が設定されていません。"
+        return "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET が設定されていません。"
 
     flow = Flow.from_client_config(
         google_client_config(),
-        scopes=SCOPES,
-        autogenerate_code_verifier=True
+        scopes=DRIVE_SCOPES,
+        autogenerate_code_verifier=True,
     )
-
     flow.redirect_uri = GOOGLE_REDIRECT_URI
 
     authorization_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
-        prompt="consent"
+        prompt="consent",
     )
 
     session["oauth_state"] = state
     session["code_verifier"] = flow.code_verifier
+    session["oauth_kind"] = "drive"
 
     return redirect(authorization_url)
 
@@ -547,387 +469,104 @@ def oauth2callback():
         code_verifier = session.get("code_verifier")
 
         if not state or not code_verifier:
-            return "Google連携エラー：セッション情報が切れています。もう一度 /google-login からやり直してください。"
+            return "Google連携エラー：セッション情報が切れています。もう一度 /drive-login からやり直してください。"
 
         flow = Flow.from_client_config(
             google_client_config(),
-            scopes=SCOPES,
-            state=state
+            scopes=DRIVE_SCOPES,
+            state=state,
         )
-
         flow.redirect_uri = GOOGLE_REDIRECT_URI
         flow.code_verifier = code_verifier
+        flow.fetch_token(authorization_response=request.url)
 
-        query = request.query_string.decode("utf-8")
-        authorization_response = GOOGLE_REDIRECT_URI
-        if query:
-            authorization_response += "?" + query
-
-        flow.fetch_token(authorization_response=authorization_response)
-
-        credentials = flow.credentials
-        refresh_token = credentials.refresh_token
+        refresh_token = flow.credentials.refresh_token
 
         if not refresh_token:
-            return """
-            Google連携は成功しましたが、refresh_token が取得できませんでした。<br>
-            もう一度 /google-login を開いて許可し直してください。<br><br>
-            それでも出ない場合は、Googleアカウント側の連携済みアプリから一度削除して再連携してください。
-            """
+            return "Google Drive連携は成功しましたが、refresh_token が取得できませんでした。もう一度 /drive-login を開いて許可し直してください。"
 
         return f"""
-        Google連携成功<br><br>
+        Google Drive連携成功<br><br>
         RenderのEnvironmentへ追加してください。<br><br>
-        KEY：GOOGLE_REFRESH_TOKEN<br>
+        KEY：GOOGLE_DRIVE_REFRESH_TOKEN<br>
         VALUE：{refresh_token}<br><br>
         この画面の内容は他人に見せないでください。
         """
 
     except Exception as e:
-        print("Google oauth error:", e)
+        print("oauth error:", e)
         print(traceback.format_exc())
-        return f"Google連携エラー：{e}"
+        return f"Google Drive連携エラー：{e}"
 
 
-@app.route("/google-locations")
-def google_locations():
+@app.route("/drive-status")
+def drive_status():
+    html = """
+    <h1>Google Drive 連携状態確認</h1>
+    <h2>環境変数</h2>
+    <ul>
+    """
+    checks = {
+        "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+        "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+        "GOOGLE_DRIVE_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN": GOOGLE_DRIVE_REFRESH_TOKEN,
+        "GOOGLE_REDIRECT_URI": GOOGLE_REDIRECT_URI,
+        "GOOGLE_DRIVE_ROOT_FOLDER_ID": GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    }
+    for key, value in checks.items():
+        html += f"<li>{key}: {'設定あり' if value else '未設定'}</li>"
+    html += "</ul>"
+
     try:
-        token = get_access_token()
-
+        token = get_drive_access_token()
         if not token:
-            return "GOOGLE_REFRESH_TOKEN が設定されていません。先に /google-login を開いてください。"
+            html += "<p>Driveトークンがありません。/drive-login を開いてください。</p>"
+            return html
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json"
-        }
-
-        accounts_res = requests.get(
-            "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
-            headers=headers,
-            timeout=30
+        root_id = GOOGLE_DRIVE_ROOT_FOLDER_ID or drive_get_or_create_folder(
+            token,
+            GOOGLE_DRIVE_ROOT_FOLDER_NAME,
         )
-
-        if accounts_res.status_code != 200:
-            return f"""
-            Googleアカウント取得エラー<br>
-            ステータス: {accounts_res.status_code}<br>
-            本文: <pre>{accounts_res.text}</pre>
-            """
-
-        accounts = accounts_res.json().get("accounts", [])
-
-        if not accounts:
-            return "Googleビジネスアカウントが見つかりませんでした。"
-
-        html = "<h2>Googleビジネス 店舗一覧</h2>"
-
-        for account in accounts:
-            account_name = account.get("name")
-            account_title = account.get("accountName", "")
-
-            html += f"<h3>{account_title}<br>{account_name}</h3>"
-
-            locations_res = requests.get(
-                f"https://mybusinessbusinessinformation.googleapis.com/v1/{account_name}/locations?readMask=name,title,storefrontAddress",
-                headers=headers,
-                timeout=30
-            )
-
-            html += f"<p>locations status: {locations_res.status_code}</p>"
-
-            if locations_res.status_code != 200:
-                html += f"<pre>{locations_res.text}</pre>"
-                continue
-
-            locations = locations_res.json().get("locations", [])
-
-            if not locations:
-                html += "<p>店舗なし</p>"
-                continue
-
-            html += "<ul>"
-
-            for loc in locations:
-                name = loc.get("name", "")
-                title = loc.get("title", "")
-                address = loc.get("storefrontAddress", {})
-                lines = address.get("addressLines", [])
-                postal = address.get("postalCode", "")
-                admin = address.get("administrativeArea", "")
-                locality = address.get("locality", "")
-
-                html += f"""
-                <li>
-                    <b>{title}</b><br>
-                    location_id: {name}<br>
-                    {postal} {admin} {locality} {' '.join(lines)}
-                </li><br>
-                """
-
-            html += "</ul>"
-
-        return html
+        html += f"<p>Drive接続OK</p><p>Root folder ID: {root_id}</p>"
 
     except Exception as e:
-        print("Google locations error:", e)
-        print(traceback.format_exc())
-        return f"Google店舗取得エラー：{e}"
+        html += f"<pre>Drive確認エラー: {e}</pre>"
 
+    return html
 
-def resize_keep_aspect(rgb, max_side=1280):
-    h, w, _ = rgb.shape
-    long_side = max(h, w)
 
-    if long_side <= max_side:
-        return rgb
+@app.route("/latest-uploads")
+def latest_uploads():
+    html = "<h1>保存済み画像</h1>"
 
-    scale = max_side / long_side
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    for shop_key, shop in SHOPS.items():
+        shop_dir = os.path.join(LOCAL_UPLOAD_DIR, shop["slug"])
+        html += f"<h2>{shop_key}</h2>"
 
-    return cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        if not os.path.exists(shop_dir):
+            html += "<p>まだ保存なし</p>"
+            continue
 
+        files = []
+        for root, _, filenames in os.walk(shop_dir):
+            for filename in filenames:
+                if filename.lower().endswith((".jpg", ".jpeg", ".png", ".txt")):
+                    path = os.path.join(root, filename)
+                    files.append(path)
 
-def detect_image_type(rgb):
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    h, s, v = cv2.split(hsv)
+        files = sorted(files, key=lambda p: os.path.getmtime(p), reverse=True)[:20]
 
-    skin_mask = (
-        ((h < 25) | (h > 165)) &
-        (s > 20) &
-        (s < 155) &
-        (v > 70)
-    )
+        if not files:
+            html += "<p>まだ保存なし</p>"
+            continue
 
-    dark_mask = (
-        (v < 75) &
-        (s > 20)
-    )
+        html += "<ul>"
+        for path in files:
+            url = "/" + path.replace(os.sep, "/")
+            html += f'<li><a href="{url}" target="_blank">{os.path.basename(path)}</a></li>'
+        html += "</ul>"
 
-    total = rgb.shape[0] * rgb.shape[1]
-    skin_ratio = float(np.sum(skin_mask)) / total
-    dark_ratio = float(np.sum(dark_mask)) / total
-
-    is_hand_photo = skin_ratio > 0.08
-    has_black_nail = dark_ratio > 0.03
-
-    return is_hand_photo, has_black_nail
-
-
-def gray_world_balance(rgb, strength=0.22):
-    img = rgb.astype(np.float32)
-
-    means = np.mean(img.reshape(-1, 3), axis=0)
-    gray = np.mean(means)
-
-    scale = gray / np.maximum(means, 1)
-    scale = 1 + (scale - 1) * strength
-
-    img = img * scale
-
-    return np.clip(img, 0, 255).astype(np.uint8)
-
-
-def soft_highlight_control(rgb):
-    img = rgb.astype(np.float32)
-
-    threshold = 238
-    mask = img > threshold
-    img[mask] = threshold + (img[mask] - threshold) * 0.35
-
-    return np.clip(img, 0, 255).astype(np.uint8)
-
-
-def protect_dark_tones(rgb):
-    img = rgb.astype(np.float32)
-
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    v = hsv[:, :, 2]
-
-    dark_mask = v < 65
-    img[dark_mask] = img[dark_mask] * 1.06 + 4
-
-    return np.clip(img, 0, 255).astype(np.uint8)
-
-
-def auto_light_correction(rgb, is_hand_photo, has_black_nail):
-    rgb = gray_world_balance(rgb)
-    rgb = soft_highlight_control(rgb)
-
-    if has_black_nail:
-        rgb = protect_dark_tones(rgb)
-
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-
-    mean_l = float(np.mean(l))
-
-    if mean_l < 105:
-        gamma = 0.92
-        table = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
-        bgr = cv2.LUT(bgr, table)
-
-        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-
-        clahe = cv2.createCLAHE(clipLimit=0.55, tileGridSize=(8, 8))
-        l = clahe.apply(l)
-
-    elif mean_l > 198:
-        l = cv2.convertScaleAbs(l, alpha=0.985, beta=-3)
-
-    else:
-        l = cv2.convertScaleAbs(l, alpha=1.01, beta=1)
-
-    lab = cv2.merge((l, a, b))
-    bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-
-def natural_adjustment(rgb, is_hand_photo):
-    pil = Image.fromarray(rgb).convert("RGB")
-
-    if is_hand_photo:
-        pil = ImageEnhance.Brightness(pil).enhance(1.01)
-        pil = ImageEnhance.Color(pil).enhance(1.045)
-        pil = ImageEnhance.Contrast(pil).enhance(1.025)
-        pil = ImageEnhance.Sharpness(pil).enhance(1.06)
-
-        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.25))
-        pil = Image.blend(pil, soft, 0.035)
-
-    else:
-        pil = ImageEnhance.Brightness(pil).enhance(1.01)
-        pil = ImageEnhance.Color(pil).enhance(1.06)
-        pil = ImageEnhance.Contrast(pil).enhance(1.045)
-        pil = ImageEnhance.Sharpness(pil).enhance(1.12)
-
-        soft = pil.filter(ImageFilter.GaussianBlur(radius=0.18))
-        pil = Image.blend(pil, soft, 0.02)
-
-    return np.array(pil)
-
-
-def improve_nail_image(filepath):
-    pil = Image.open(filepath).convert("RGB")
-    pil = ImageOps.exif_transpose(pil)
-
-    rgb = np.array(pil)
-
-    is_hand_photo, has_black_nail = detect_image_type(rgb)
-
-    rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
-    rgb = natural_adjustment(rgb, is_hand_photo)
-
-    rgb = resize_keep_aspect(rgb, max_side=1280)
-
-    out = Image.fromarray(rgb).convert("RGB")
-    out.save(
-        filepath,
-        "JPEG",
-        quality=94,
-        optimize=True
-    )
-
-
-def create_line_preview_image(original_path, preview_path):
-    img = Image.open(original_path).convert("RGB")
-    img = ImageOps.exif_transpose(img)
-
-    img.thumbnail((600, 600), Image.LANCZOS)
-
-    img.save(
-        preview_path,
-        "JPEG",
-        quality=85,
-        optimize=True
-    )
-
-
-def create_instagram_post_image(source_path, instagram_path):
-    img = Image.open(source_path).convert("RGB")
-    img = ImageOps.exif_transpose(img)
-
-    target_w, target_h = 1080, 1350
-
-    ratio = max(target_w / img.width, target_h / img.height)
-    bg_w = max(target_w, int(img.width * ratio))
-    bg_h = max(target_h, int(img.height * ratio))
-
-    bg = img.resize((bg_w, bg_h), Image.LANCZOS)
-    left = (bg.width - target_w) // 2
-    top = (bg.height - target_h) // 2
-    bg = bg.crop((left, top, left + target_w, top + target_h))
-    bg = bg.filter(ImageFilter.GaussianBlur(radius=28))
-    bg = ImageEnhance.Brightness(bg).enhance(0.92)
-
-    fg = img.copy()
-    fg.thumbnail((target_w, target_h), Image.LANCZOS)
-    x = (target_w - fg.width) // 2
-    y = (target_h - fg.height) // 2
-    bg.paste(fg, (x, y))
-
-    bg.save(
-        instagram_path,
-        "JPEG",
-        quality=92,
-        optimize=True
-    )
-
-
-def clean_text(text):
-    for old, new in NG_REPLACE.items():
-        text = text.replace(old, new)
-
-    text = text.replace("。。", "。")
-    text = text.replace("、、", "、")
-    text = text.replace("  ", " ")
-
-    return text.strip()
-
-
-def shop_message():
-    return """店舗名を送信してください。
-
-・八尾店
-・住道店
-・心斎橋店
-・マカナ
-
-設定後にネイル画像を送ると、
-画像加工＋ブログ文章を自動作成します。"""
-
-
-def safe_push_text(user_id, text):
-    try:
-        line_bot_api.push_message(
-            user_id,
-            TextSendMessage(text=text)
-        )
-        return True
-    except Exception as e:
-        print("push text error:", e)
-        print(traceback.format_exc())
-        return False
-
-
-def safe_push_image(user_id, image_url, preview_url):
-    try:
-        line_bot_api.push_message(
-            user_id,
-            ImageSendMessage(
-                original_content_url=image_url,
-                preview_image_url=preview_url
-            )
-        )
-        return True
-    except Exception as e:
-        print("push image error:", e)
-        print(traceback.format_exc())
-        return False
+    return html
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -937,196 +576,64 @@ def handle_text(event):
 
     if text in SHOPS:
         user_shop[user_id] = text
-
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
                 text=f"{SHOPS[text]['name']}で設定しました。\nネイル画像を送ってください。"
-            )
+            ),
         )
-
         return
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=shop_message())
-    )
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=shop_message()))
 
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
-    stage = "開始"
 
     if user_id not in user_shop:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=shop_message())
-        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=shop_message()))
         return
 
     shop_key = user_shop[user_id]
-    shop = SHOPS[shop_key]
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text="画像を受け取りました。加工と文章作成をしています。少しお待ちください。")
-    )
 
     try:
-        stage = "LINE画像取得"
-        message_content = line_bot_api.get_message_content(event.message.id)
-
-        image_id = uuid.uuid4().hex
-        filename = f"{image_id}.jpg"
-        preview_filename = f"preview_{image_id}.jpg"
-        instagram_filename = f"instagram_{image_id}.jpg"
-
-        filepath = os.path.join(IMAGE_DIR, filename)
-        preview_path = os.path.join(IMAGE_DIR, preview_filename)
-        instagram_path = os.path.join(IMAGE_DIR, instagram_filename)
-
-        stage = "画像保存"
-        with open(filepath, "wb") as f:
-            for chunk in message_content.iter_content():
-                f.write(chunk)
-
-        stage = "画像補正"
-        improve_nail_image(filepath)
-
-        stage = "LINEプレビュー作成"
-        create_line_preview_image(filepath, preview_path)
-
-        stage = "Instagram画像作成"
-        create_instagram_post_image(filepath, instagram_path)
-
-        image_url = f"{BASE_URL}/static/images/{filename}"
-        preview_url = f"{BASE_URL}/static/images/{preview_filename}"
-        instagram_image_url = f"{BASE_URL}/static/images/{instagram_filename}"
-        save_latest_image(image_url, preview_url, instagram_image_url)
-
-        stage = "画像push送信"
-        image_sent = safe_push_image(user_id, image_url, preview_url)
-
-        stage = "画像読み込み"
-        with open(filepath, "rb") as img:
-            base64_image = base64.b64encode(img.read()).decode("utf-8")
-
-        ending = random.choice(ENDINGS)
-        writing_style = random.choice(WRITING_STYLES)
-
-        prompt = f"""
-あなたはネイルサロンのスタッフです。
-Hot Pepper Beautyに載せる、自然なネイル投稿文を作ってください。
-
-今回の文章トーン：
-{writing_style}
-
-大事な方針：
-・AIっぽい説明文にしない
-・実際のサロンスタッフが短く書いた感じにする
-・画像に写っている内容だけを書く
-・文章をきれいに整えすぎない
-・一文を長くしすぎない
-・「片手は」「もう片手は」をなるべく使わない
-・「ちょうどいいです」を使わない
-・同じ語尾を続けない
-・押し売りしない
-・絵文字は禁止
-
-禁止ワード：
-個性的
-洗練
-魅力
-ワンランク
-存在感
-映える
-上品
-
-文章の感じ：
-オレンジ系のカラーに、シルバーのきらっとしたデザインを合わせました。
-左右で雰囲気を変えて、少し遊びのある仕上がりです。
-
-淡いカラーに細めのラインを入れたデザインです。
-派手すぎず、手元がすっきり見えます。
-
-最後は
-「{ending}」
-で締める。
-
-ハッシュタグは5個。
-必ず {shop['area_tag']} を入れる。
-
-出力形式：
-
-タイトル
-
-本文
-
-#タグ #タグ #タグ #タグ #タグ
-
-{shop['name']}
-{shop['info']}
-"""
-
-        stage = "AI文章生成"
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            temperature=0.55,
-            max_tokens=600,
-            messages=[
-                {
-                    "role": "system",
-                    "content": prompt
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "このネイル画像を見て、自然な投稿文を作成してください。"
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ]
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"{shop_key}の画像を受け取りました。補正してGoogle Driveへ保存します。"),
         )
 
-        text = response.choices[0].message.content
-        text = clean_text(text)
+        message_content = line_bot_api.get_message_content(event.message.id)
+        result = save_image_workflow(message_content, shop_key)
 
-        if not image_sent:
-            text = f"""画像送信だけ失敗しました。
-ブログ文章は下に送ります。
+        if result["drive"]:
+            drive_text = (
+                "Google Drive保存完了\n\n"
+                f"店舗：{shop_key}\n"
+                f"日付：{result['date_folder']}\n"
+                f"補正済み画像：{result['drive']['corrected'].get('webViewLink', '')}\n\n"
+                "あとでCodexに「新しい画像を確認して投稿して」と指示してください。"
+            )
+        else:
+            drive_text = (
+                "画像補正は完了しましたが、Google Drive連携が未設定です。\n\n"
+                f"店舗：{shop_key}\n"
+                f"確認用URL：{result['corrected_url']}\n\n"
+                "Renderで GOOGLE_DRIVE_REFRESH_TOKEN を設定してください。"
+            )
 
-{text}"""
-
-        stage = "LINE文章push送信"
-        safe_push_text(user_id, text)
+        line_bot_api.push_message(user_id, TextSendMessage(text=drive_text))
 
     except Exception as e:
-        print("image error stage:", stage)
         print("image error:", e)
         print(traceback.format_exc())
-
-        safe_push_text(
-            user_id,
-            f"""エラーが出ました。
-
-止まった場所:
-{stage}
-
-内容:
-{e}
-
-もう一度画像を送ってください。
-何度も出る場合は、RenderのLogsを確認してください。"""
-        )
+        try:
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text=f"保存エラーが出ました。\n場所：画像保存処理\n内容：{e}"),
+            )
+        except Exception as push_error:
+            print("push error:", push_error)
 
 
 if __name__ == "__main__":
