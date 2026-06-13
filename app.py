@@ -310,10 +310,6 @@ def improve_nail_image(source_path, output_path):
     pil = ImageOps.exif_transpose(pil)
 
     rgb = np.array(pil)
-    rgb = fit_to_square_no_cut(rgb)
-
-    pil = Image.fromarray(rgb).resize((1080, 1080), Image.LANCZOS)
-    rgb = np.array(pil)
 
     is_hand_photo, has_black_nail = detect_image_type(rgb)
     rgb = auto_light_correction(rgb, is_hand_photo, has_black_nail)
@@ -351,7 +347,7 @@ def save_image_workflow(message_content, shop_key):
     date_folder = stamp.strftime("%Y-%m-%d")
     basename = stamp.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
 
-    local_dir = os.path.join(LOCAL_UPLOAD_DIR, shop["slug"], date_folder)
+    local_dir = os.path.join(LOCAL_UPLOAD_DIR, shop["slug"], "unposted", date_folder)
     os.makedirs(local_dir, exist_ok=True)
 
     original_filename = f"{basename}_original.jpg"
@@ -392,7 +388,9 @@ def save_image_workflow(message_content, shop_key):
             GOOGLE_DRIVE_ROOT_FOLDER_NAME,
         )
         shop_folder_id = drive_get_or_create_folder(token, shop["folder_name"], root_id)
-        date_folder_id = drive_get_or_create_folder(token, date_folder, shop_folder_id)
+        unposted_folder_id = drive_get_or_create_folder(token, "未投稿", shop_folder_id)
+        drive_get_or_create_folder(token, "投稿済み", shop_folder_id)
+        date_folder_id = drive_get_or_create_folder(token, date_folder, unposted_folder_id)
 
         original_drive = drive_upload_file(token, original_path, original_filename, date_folder_id, "image/jpeg")
         corrected_drive = drive_upload_file(token, corrected_path, corrected_filename, date_folder_id, "image/jpeg")
@@ -401,6 +399,7 @@ def save_image_workflow(message_content, shop_key):
         result["drive"] = {
             "root_folder_id": root_id,
             "shop_folder_id": shop_folder_id,
+            "unposted_folder_id": unposted_folder_id,
             "date_folder_id": date_folder_id,
             "original": original_drive,
             "corrected": corrected_drive,
