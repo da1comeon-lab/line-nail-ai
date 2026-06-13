@@ -1,4 +1,4 @@
-from flask import Flask, request, send_from_directory, redirect, session
+from flask import Flask, request, send_from_directory, redirect, session, send_file
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import *
 from linebot.exceptions import InvalidSignatureError
@@ -12,6 +12,8 @@ import json
 import secrets
 import requests
 import traceback
+import io
+import zipfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -417,6 +419,7 @@ def home():
     /drive-status<br>
     /drive-login<br>
     /latest-uploads<br>
+    /download-unposted-zip<br>
     """
 
 
@@ -572,6 +575,50 @@ def latest_uploads():
         html += "</ul>"
 
     return html
+
+
+@app.route("/download-unposted-zip")
+def download_unposted_zip():
+    today = now_jst().strftime("%Y-%m-%d")
+    zip_buffer = io.BytesIO()
+    added = 0
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for shop_key, shop in SHOPS.items():
+            unposted_dir = os.path.join(LOCAL_UPLOAD_DIR, shop["slug"], "unposted")
+
+            if not os.path.exists(unposted_dir):
+                continue
+
+            for root, _, filenames in os.walk(unposted_dir):
+                for filename in filenames:
+                    lower_name = filename.lower()
+                    if not (
+                        lower_name.endswith("_corrected.jpg")
+                        or lower_name.endswith("_corrected.jpeg")
+                        or lower_name.endswith("_corrected.png")
+                        or lower_name.endswith("_post_text.txt")
+                    ):
+                        continue
+
+                    full_path = os.path.join(root, filename)
+                    display_name = filename.replace("_corrected", "").replace("_post_text", "_text")
+                    zip_name = f"{shop_key}_{display_name}"
+                    zip_file.write(full_path, zip_name)
+                    added += 1
+
+    if added == 0:
+        return "未投稿の投稿用ファイルがありません。", 404
+
+    zip_buffer.seek(0)
+    download_name = f"smily_unposted_{today}.zip"
+
+    return send_file(
+        zip_buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 @handler.add(MessageEvent, message=TextMessage)
